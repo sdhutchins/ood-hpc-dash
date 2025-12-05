@@ -19,13 +19,18 @@ SETTINGS_FILE = Path('config/settings.json')
 # Whitelisted light navbar colors (value, label)
 ALLOWED_NAV_COLORS = [
     ("#e3f2fd", "Light Blue"),
+    ("#dfe7fd", "Light Periwinkle"),
+    ("#ede7f6", "Lavender"),
+    ("#f3e8ff", "Soft Lilac"),
+    ("#fdf0f5", "Blush Pink"),
+    ("#ffeef3", "Rose Tint"),
+    ("#e8f5e9", "Mint"),
+    ("#e0f7fa", "Cyan Tint"),
+    ("#e5f4ff", "Sky Mist"),
+    ("#fff3e0", "Soft Orange"),
+    ("#fef8e7", "Cream"),
     ("#f8f9fa", "Off White"),
     ("#f1f3f5", "Light Gray"),
-    ("#e8f5e9", "Mint"),
-    ("#fff3e0", "Soft Orange"),
-    ("#fdf0f5", "Blush"),
-    ("#e0f7fa", "Cyan Tint"),
-    ("#fef8e7", "Cream"),
 ]
 
 

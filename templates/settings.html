@@ -14,7 +14,7 @@
         <select id="navbar_color" name="navbar_color" class="form-select" aria-label="Select navbar color">
             {% for value, label in allowed_nav_colors %}
             <option value="{{ value }}" data-color="{{ value }}" {% if settings.navbar_color == value %}selected{% endif %}>
-                {{ label }} ({{ value }})
+                {{ label }}
             </option>
             {% endfor %}
         </select>

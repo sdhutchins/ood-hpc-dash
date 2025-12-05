@@ -44,7 +44,7 @@ app = Flask(__name__)
 # Secret key for session/flash; override with env SECRET_KEY in production
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
 
-# Load settings once on startup
+# Load settings on startup (used for one-time config like flaskcode path)
 settings_data = _load_settings()
 
 # Configure FlaskCode using settings
@@ -138,8 +138,9 @@ app.register_blueprint(settings_bp)
 
 @app.context_processor
 def inject_navbar_color():
-    """Make navbar_color available to all templates."""
-    navbar_color = settings_data.get("navbar_color", "#e3f2fd")
+    """Make navbar_color available to all templates (reload each request)."""
+    current = _load_settings()
+    navbar_color = current.get("navbar_color", settings_data.get("navbar_color", "#e3f2fd"))
     return {"navbar_color": navbar_color}
 
 @app.route("/")
