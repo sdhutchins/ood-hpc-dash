@@ -31,18 +31,31 @@ def get_available_modules() -> List[Dict[str, str]]:
     
     try:
         logger.info("Creating Spider instance in get_available_modules")
-        spider = Spider()
+        try:
+            spider = Spider()
+            logger.info("Spider instance created in get_available_modules")
+        except Exception as spider_error:
+            logger.error(f"Failed to create Spider in get_available_modules: {spider_error}", exc_info=True)
+            raise
         
         # Get unique module names (e.g., ['CUDA', 'lmod', 'GCC'])
         logger.info("Calling spider.get_names()")
-        unique_names = spider.get_names()
-        logger.info(f"Got {len(unique_names)} unique names")
+        try:
+            unique_names = spider.get_names()
+            logger.info(f"Got {len(unique_names)} unique names")
+        except Exception as names_error:
+            logger.error(f"Error in spider.get_names(): {names_error}", exc_info=True)
+            raise
         
         # Get all modules filtered by those names
         # This returns all versions of each module
         logger.info("Calling spider.get_modules() with unique names")
-        modules_dict = spider.get_modules(unique_names)
-        logger.info(f"Got {len(modules_dict)} modules from spider")
+        try:
+            modules_dict = spider.get_modules(unique_names)
+            logger.info(f"Got {len(modules_dict)} modules from spider")
+        except Exception as modules_error:
+            logger.error(f"Error in spider.get_modules(): {modules_error}", exc_info=True)
+            raise
 
         processed_modules = []
 
@@ -88,11 +101,22 @@ def modules():
     
     try:
         logger.info("Creating Spider instance")
-        spider = Spider()
+        try:
+            spider = Spider()
+            logger.info("Spider instance created successfully")
+        except Exception as spider_error:
+            logger.error(f"Failed to create Spider instance: {spider_error}", exc_info=True)
+            raise
+        
         logger.info("Getting unique module names")
-        unique_names = spider.get_names()
-        unique_count = len(unique_names)
-        logger.info(f"Found {unique_count} unique module names")
+        try:
+            unique_names = spider.get_names()
+            logger.info(f"get_names() returned {len(unique_names)} names")
+            unique_count = len(unique_names)
+            logger.info(f"Found {unique_count} unique module names")
+        except Exception as names_error:
+            logger.error(f"Error calling get_names(): {names_error}", exc_info=True)
+            raise
     except Exception as e:
         logger.error(f"Error getting unique names count: {e}", exc_info=True)
         unique_count = 0
