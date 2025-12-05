@@ -1,10 +1,12 @@
-from flask import Blueprint, render_template, jsonify
-from pathlib import Path
+# Standard library imports
 import json
-
 import logging
 import time
-from typing import List, Dict, Optional
+from pathlib import Path
+from typing import Dict, List, Optional
+
+# Third-party imports
+from flask import Blueprint, jsonify, render_template
 
 try:
     from lmod.spider import Spider
@@ -28,29 +30,43 @@ _spider_initializing = False  # Flag to prevent multiple simultaneous initializa
 CACHE_TTL = 300  # Cache for 5 minutes (300 seconds)
 CACHE_FILE = Path('logs/modules_cache.json')  # File-based cache that survives app restarts
 
-def _load_cache_from_file() -> Optional[dict]:
-    """Load cache from file if it exists and is valid."""
+def _load_cache_from_file() -> Optional[Dict]:
+    """Load cache from file if it exists and is valid.
+    
+    Returns:
+        Dictionary with 'modules', 'unique_count', and 'timestamp' if valid,
+        None otherwise.
+    """
     try:
-        if CACHE_FILE.exists():
-            with open(CACHE_FILE, 'r') as f:
-                cache_data = json.load(f)
-            cache_time = cache_data.get('timestamp', 0)
-            current_time = time.time()
-            cache_age = current_time - cache_time
-            
-            if cache_age < CACHE_TTL:
-                logger.info(f"Loaded cache from file (age: {cache_age:.1f}s)")
-                return cache_data
-            else:
-                logger.info(f"File cache expired (age: {cache_age:.1f}s)")
-        else:
+        if not CACHE_FILE.exists():
             logger.info("No cache file found")
-    except Exception as e:
+            return None
+        
+        with CACHE_FILE.open('r', encoding='utf-8') as f:
+            cache_data = json.load(f)
+        
+        cache_time = cache_data.get('timestamp', 0)
+        current_time = time.time()
+        cache_age = current_time - cache_time
+        
+        if cache_age < CACHE_TTL:
+            logger.info(f"Loaded cache from file (age: {cache_age:.1f}s)")
+            return cache_data
+        
+        logger.info(f"File cache expired (age: {cache_age:.1f}s)")
+        return None
+        
+    except (json.JSONDecodeError, OSError) as e:
         logger.error(f"Error loading cache from file: {e}", exc_info=True)
-    return None
+        return None
 
-def _save_cache_to_file(modules: List[Dict], unique_count: int):
-    """Save cache to file so it survives app restarts."""
+def _save_cache_to_file(modules: List[Dict[str, str]], unique_count: int) -> None:
+    """Save cache to file so it survives app restarts.
+    
+    Args:
+        modules: List of module dictionaries.
+        unique_count: Number of unique module packages.
+    """
     try:
         CACHE_FILE.parent.mkdir(exist_ok=True)
         cache_data = {
@@ -58,10 +74,10 @@ def _save_cache_to_file(modules: List[Dict], unique_count: int):
             'unique_count': unique_count,
             'timestamp': time.time()
         }
-        with open(CACHE_FILE, 'w') as f:
-            json.dump(cache_data, f)
+        with CACHE_FILE.open('w', encoding='utf-8') as f:
+            json.dump(cache_data, f, indent=2)
         logger.info(f"Saved cache to file: {CACHE_FILE}")
-    except Exception as e:
+    except OSError as e:
         logger.error(f"Error saving cache to file: {e}", exc_info=True)
 
 def _get_spider_instance():
@@ -93,14 +109,17 @@ def _get_spider_instance():
         logger.error(f"Failed to create Spider instance: {e}", exc_info=True)
         raise
 
-def get_available_modules(spider=None) -> List[Dict[str, str]]:
-    """
-    Get list of available modules using lmodule Spider.
+def get_available_modules(spider: Optional[Spider] = None) -> List[Dict[str, str]]:
+    """Get list of available modules using lmodule Spider.
+    
     First gets unique module names, then retrieves all modules for those names.
     Returns list of dictionaries with name, version, and location.
     
     Args:
-        spider: Optional Spider instance to reuse. If None, creates a new one.
+        spider: Spider instance to use. Must be provided (not created here).
+    
+    Returns:
+        List of dictionaries with 'name', 'version', and 'location' keys.
     """
     logger.info("get_available_modules() called")
     
@@ -108,35 +127,22 @@ def get_available_modules(spider=None) -> List[Dict[str, str]]:
         logger.error("lmodule package not available")
         return []
     
+    if spider is None:
+        logger.error("Spider instance must be provided to get_available_modules")
+        return []
+    
     try:
-        # Create Spider if not provided
-        if spider is None:
-            logger.info("Creating Spider instance in get_available_modules")
-            try:
-                spider = Spider()
-                logger.info("Spider instance created in get_available_modules")
-            except Exception as spider_error:
-                logger.error(f"Failed to create Spider in get_available_modules: {spider_error}", exc_info=True)
-                raise
         
         # Get unique module names (e.g., ['CUDA', 'lmod', 'GCC'])
         logger.info("Calling spider.get_names()")
-        try:
-            unique_names = spider.get_names()
-            logger.info(f"Got {len(unique_names)} unique names")
-        except Exception as names_error:
-            logger.error(f"Error in spider.get_names(): {names_error}", exc_info=True)
-            raise
+        unique_names = spider.get_names()
+        logger.info(f"Got {len(unique_names)} unique names")
         
         # Get all modules filtered by those names
         # This returns all versions of each module
         logger.info("Calling spider.get_modules() with unique names")
-        try:
-            modules_dict = spider.get_modules(unique_names)
-            logger.info(f"Got {len(modules_dict)} modules from spider")
-        except Exception as modules_error:
-            logger.error(f"Error in spider.get_modules(): {modules_error}", exc_info=True)
-            raise
+        modules_dict = spider.get_modules(unique_names)
+        logger.info(f"Got {len(modules_dict)} modules from spider")
 
         processed_modules = []
 
@@ -163,11 +169,8 @@ def get_available_modules(spider=None) -> List[Dict[str, str]]:
         logger.info("Successfully retrieved and processed modules")
         return sorted_modules
         
-    except FileNotFoundError:
-        logger.error("lmodule Spider not found", exc_info=True)
-        return []
-    except Exception as e:
-        logger.error(f"Error getting modules: {e}", exc_info=True)
+    except (AttributeError, RuntimeError) as e:
+        logger.error(f"Error getting modules from Spider: {e}", exc_info=True)
         return []
 
 # Route for the modules page
