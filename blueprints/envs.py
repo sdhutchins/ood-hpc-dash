@@ -62,11 +62,45 @@ def _load_envs_from_conda_list():
             envs.append({"name": name, "path": env_path})
     return envs, warning
 
+
+def _categorize_env(path: str) -> str:
+    """Derive a friendly category from the env path."""
+    lower = path.lower()
+    if "mamba" in lower:
+        return "Mamba"
+    if ".conda" in lower:
+        return "Conda"
+    if lower.startswith("/scratch"):
+        return "Scratch"
+    if lower.startswith("/data/project"):
+        return "Project"
+    if lower.startswith("/home"):
+        return "Home"
+    return "Other"
+
+
+def _group_envs(envs: list[dict]) -> tuple[dict, list[str]]:
+    """Group envs by derived category and sort."""
+    grouped = {}
+    for env in envs:
+        cat = _categorize_env(env["path"])
+        grouped.setdefault(cat, []).append(env)
+    # Sort envs in each category by name (alpha)
+    for cat_envs in grouped.values():
+        cat_envs.sort(key=lambda e: e["name"].lower())
+    # Order categories
+    order = ["Project", "Home", "Conda", "Mamba", "Scratch", "Other"]
+    ordered = [c for c in order if c in grouped] + [c for c in grouped if c not in order]
+    return grouped, ordered
+
 @envs_bp.route('/')
 def envs():
     envs_list, warning = _load_envs_from_conda_list()
+    envs_by_category, category_order = _group_envs(envs_list) if envs_list else ({}, [])
     return render_template(
         'envs.html',
         envs=envs_list,
         warning=warning,
+        envs_by_category=envs_by_category,
+        category_order=category_order,
     )

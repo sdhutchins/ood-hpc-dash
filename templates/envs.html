@@ -4,20 +4,30 @@
 {% if warning %}
 <div class="alert alert-warning">{{ warning }}</div>
 {% endif %}
-<table class="table table-sm table-hover">
-  <thead class="table-light">
-    <tr><th>Name</th><th>Path</th></tr>
-  </thead>
-  <tbody>
-  {% for env in envs %}
-    <tr>
-      <td>{{ env.name }}</td>
-      <td><code>{{ env.path }}</code></td>
-    </tr>
+{% if envs_by_category %}
+  {% for cat in category_order %}
+    {% if envs_by_category[cat] %}
+    <div class="card mb-3">
+      <div class="card-header fw-semibold">{{ cat }}</div>
+      <div class="card-body p-0">
+        <table class="table table-sm table-hover mb-0">
+          <thead class="table-light">
+            <tr><th style="width: 25%;">Name</th><th>Path</th></tr>
+          </thead>
+          <tbody>
+          {% for env in envs_by_category[cat] %}
+            <tr>
+              <td>{{ env.name }}</td>
+              <td><code>{{ env.path }}</code></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
   {% endfor %}
-  {% if envs|length == 0 %}
-    <tr><td colspan="2" class="text-muted">No environments found.</td></tr>
-  {% endif %}
-  </tbody>
-</table>
+{% else %}
+  <div class="alert alert-secondary mb-0">No environments found.</div>
+{% endif %}
 {% endblock %}
