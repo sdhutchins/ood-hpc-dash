@@ -3,7 +3,6 @@
 {% block content %}
 <div class="row mb-4">
     <div class="col">
-        <h2 class="mb-2">Available Modules</h2>
         <p class="text-muted">Browse available environment modules on the HPC system.</p>
     </div>
 </div>
@@ -19,7 +18,8 @@
     </div>
     <div class="col-md-6 d-flex align-items-center">
         <small class="text-muted">
-            <span id="moduleCount">{{ modules|length }}</span> modules available
+            <span id="uniqueCount">{{ unique_count }}</span> unique packages,
+            <span id="moduleCount">{{ modules|length }}</span> total modules
         </small>
     </div>
 </div>

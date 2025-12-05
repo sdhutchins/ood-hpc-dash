@@ -1,8 +1,9 @@
 from flask import Blueprint, render_template, jsonify
 from lmod.spider import Spider
+from pathlib import Path
 
 import logging
-from typing import List
+from typing import List, Dict
 
 # Blueprint for the modules page
 modules_bp = Blueprint('modules', __name__, url_prefix='/modules')
@@ -10,23 +11,26 @@ modules_bp = Blueprint('modules', __name__, url_prefix='/modules')
 # Logger for the modules blueprint
 logger = logging.getLogger(__name__)
 
-def get_available_modules() -> List[str]:
+def get_available_modules() -> List[Dict[str, str]]:
     """
-    Run modulecmd python avail to get list of available modules.
-    Returns sorted list of module names.
+    Get list of available modules using lmodule Spider.
+    First gets unique module names, then retrieves all modules for those names.
+    Returns list of dictionaries with name, version, and location.
     """
-    a = Spider()
-    b = Spider()
     try:
-        # Try modulecmd python avail first
-        module_names = a.get_names()
-        modules = b.get_modules()
+        spider = Spider()
+        
+        # Get unique module names (e.g., ['CUDA', 'lmod', 'GCC'])
+        unique_names = spider.get_names()
+        
+        # Get all modules filtered by those names
+        # This returns all versions of each module
+        modules_dict = spider.get_modules(unique_names)
 
         processed_modules = []
 
         for file_path, module_name in modules_dict.items():
             # Extract Location from file_path
-            from pathlib import Path
             location = str(Path(file_path).parent)
             
             # Extract Version (optional - for separate column)
@@ -42,19 +46,11 @@ def get_available_modules() -> List[str]:
                 'location': location         # Directory path
             })
 
-        
-        # Parse the output
-        # modulecmd output format varies, you'll need to parse it
-        # Look for module names in the output
-        
-        modules = []
-        # Parse logic here - extract module names from stdout
-        # Filter out empty strings, sort, return
-        
-        return sorted(modules)
+        # Sort by module name
+        return sorted(processed_modules, key=lambda x: x['name'])
         
     except FileNotFoundError:
-        logger.error("module command not found")
+        logger.error("lmodule Spider not found")
         return []
     except Exception as e:
         logger.error(f"Error getting modules: {e}")
@@ -64,8 +60,15 @@ def get_available_modules() -> List[str]:
 @modules_bp.route('/')
 def modules():
     """Render the modules page"""
+    try:
+        spider = Spider()
+        unique_names = spider.get_names()
+        unique_count = len(unique_names)
+    except Exception:
+        unique_count = 0
+    
     modules_list = get_available_modules()
-    return render_template('modules.html', modules=modules_list)
+    return render_template('modules.html', modules=modules_list, unique_count=unique_count)
 
 @modules_bp.route('/list')
 def modules_list():
