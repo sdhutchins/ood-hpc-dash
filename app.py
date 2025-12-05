@@ -22,7 +22,8 @@ app = Flask(__name__)
 
 # Configure FlaskCode
 app.config.from_object(flaskcode.default_config)
-app.config['FLASKCODE_RESOURCE_BASEPATH'] = os.path.expanduser('~')
+# Set to current app directory (change to a specific project directory if needed)
+app.config['FLASKCODE_RESOURCE_BASEPATH'] = "/data/project/worthey_lab/projects/PAH_RHamid/support"
 app.register_blueprint(flaskcode.blueprint, url_prefix='/flaskcode')
 
 # Create logs directory if it doesn't exist
