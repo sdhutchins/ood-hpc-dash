@@ -169,33 +169,36 @@ def modules_list():
             'unique_count': _cached_unique_count
         })
     
-    # Cache expired or missing - refresh it
-    logger.info("Cache expired or missing, refreshing in /list endpoint")
+    # If we have stale cache, return it immediately while refreshing in background
+    if _cached_modules is not None:
+        logger.info("Returning stale cache immediately, will refresh in background")
+        # Return stale data immediately to prevent timeout
+        return jsonify({
+            'modules': _cached_modules,
+            'unique_count': _cached_unique_count,
+            'stale': True,
+            'message': 'Refreshing data, please refresh page in a moment'
+        })
+    
+    # No cache at all - try to create Spider
+    # This may take 30-60 seconds, but we'll let it complete
+    logger.info("No cache available, creating Spider (this may take 30-60 seconds)")
     unique_count = 0
     modules_list = []
     
     try:
-        # Get cached or create new Spider instance
+        # Get cached or create new Spider instance (this may take 30-60 seconds)
         spider = _get_spider_instance()
         
         logger.info("Getting unique module names")
-        try:
-            unique_names = spider.get_names()
-            logger.info(f"get_names() returned {len(unique_names)} names")
-            unique_count = len(unique_names)
-            logger.info(f"Found {unique_count} unique module names")
-        except Exception as names_error:
-            logger.error(f"Error calling get_names(): {names_error}", exc_info=True)
-            raise
+        unique_names = spider.get_names()
+        logger.info(f"get_names() returned {len(unique_names)} names")
+        unique_count = len(unique_names)
         
         # Get modules using cached spider
         logger.info("Calling get_available_modules() with cached spider")
-        try:
-            modules_list = get_available_modules(spider=spider)
-            logger.info(f"Retrieved {len(modules_list)} modules")
-        except Exception as modules_error:
-            logger.error(f"Error in get_available_modules: {modules_error}", exc_info=True)
-            modules_list = []
+        modules_list = get_available_modules(spider=spider)
+        logger.info(f"Retrieved {len(modules_list)} modules")
         
         # Update cache
         _cached_modules = modules_list
@@ -205,18 +208,12 @@ def modules_list():
             
     except Exception as e:
         logger.error(f"Error in modules_list endpoint: {e}", exc_info=True)
-        # Return cached data if available, even if expired
-        if _cached_modules is not None:
-            logger.warning("Returning stale cached data due to error")
-            return jsonify({
-                'modules': _cached_modules,
-                'unique_count': _cached_unique_count,
-                'stale': True
-            })
+        # Always return JSON, never let it hang
         return jsonify({
             'modules': [],
             'unique_count': 0,
-            'error': str(e)
+            'error': str(e),
+            'message': 'Failed to load modules. Please try again.'
         })
     
     return jsonify({

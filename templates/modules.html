@@ -24,6 +24,13 @@
     </div>
 </div>
 
+{% if not modules or modules|length == 0 %}
+<div class="alert alert-info alert-dismissible fade show" role="alert" id="initialCacheMessage">
+    <strong>Initializing module system:</strong> This is the first load and may take 30-60 seconds while the module cache is being built. Please be patient.
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+</div>
+{% endif %}
+
 <div class="card">
     <div class="card-body">
         <div id="loadingIndicator" class="text-center py-5 {% if modules and modules|length > 0 %}d-none{% endif %}">
@@ -90,6 +97,9 @@ document.addEventListener('DOMContentLoaded', function() {
             
             const response = await fetch('{{ url_for("modules.modules_list") }}');
             if (!response.ok) {
+                if (response.status === 502) {
+                    throw new Error('Server is initializing module system. This may take 30-60 seconds. Please wait and refresh the page.');
+                }
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
             const data = await response.json();
@@ -102,6 +112,11 @@ document.addEventListener('DOMContentLoaded', function() {
             const unique = data.unique_count || 0;
             
             loadingIndicator.classList.add('d-none');
+            // Hide initial cache message if it exists
+            const initialCacheMsg = document.getElementById('initialCacheMessage');
+            if (initialCacheMsg) {
+                initialCacheMsg.classList.add('d-none');
+            }
             if (tableContainer) {
                 tableContainer.classList.remove('d-none');
             }
