@@ -1,9 +1,10 @@
 from flask import Blueprint, render_template, jsonify
 from pathlib import Path
+import json
 
 import logging
 import time
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 try:
     from lmod.spider import Spider
@@ -25,6 +26,43 @@ _cached_unique_count = 0
 _cache_timestamp = 0
 _spider_initializing = False  # Flag to prevent multiple simultaneous initializations
 CACHE_TTL = 300  # Cache for 5 minutes (300 seconds)
+CACHE_FILE = Path('logs/modules_cache.json')  # File-based cache that survives app restarts
+
+def _load_cache_from_file() -> Optional[dict]:
+    """Load cache from file if it exists and is valid."""
+    try:
+        if CACHE_FILE.exists():
+            with open(CACHE_FILE, 'r') as f:
+                cache_data = json.load(f)
+            cache_time = cache_data.get('timestamp', 0)
+            current_time = time.time()
+            cache_age = current_time - cache_time
+            
+            if cache_age < CACHE_TTL:
+                logger.info(f"Loaded cache from file (age: {cache_age:.1f}s)")
+                return cache_data
+            else:
+                logger.info(f"File cache expired (age: {cache_age:.1f}s)")
+        else:
+            logger.info("No cache file found")
+    except Exception as e:
+        logger.error(f"Error loading cache from file: {e}", exc_info=True)
+    return None
+
+def _save_cache_to_file(modules: List[Dict], unique_count: int):
+    """Save cache to file so it survives app restarts."""
+    try:
+        CACHE_FILE.parent.mkdir(exist_ok=True)
+        cache_data = {
+            'modules': modules,
+            'unique_count': unique_count,
+            'timestamp': time.time()
+        }
+        with open(CACHE_FILE, 'w') as f:
+            json.dump(cache_data, f)
+        logger.info(f"Saved cache to file: {CACHE_FILE}")
+    except Exception as e:
+        logger.error(f"Error saving cache to file: {e}", exc_info=True)
 
 def _get_spider_instance():
     """Get or create cached Spider instance."""
@@ -149,9 +187,18 @@ def modules():
     current_time = time.time()
     cache_age = current_time - _cache_timestamp
     
-    # If we have cached data, use it for initial render
+    # Check in-memory cache first
     if _cached_modules is not None and cache_age < CACHE_TTL:
-        logger.info(f"Using cached modules data for initial render (age: {cache_age:.1f}s)")
+        logger.info(f"Using in-memory cached modules data for initial render (age: {cache_age:.1f}s)")
+        return render_template('modules.html', modules=_cached_modules, unique_count=_cached_unique_count)
+    
+    # Check file cache
+    file_cache = _load_cache_from_file()
+    if file_cache:
+        _cached_modules = file_cache.get('modules', [])
+        _cached_unique_count = file_cache.get('unique_count', 0)
+        _cache_timestamp = file_cache.get('timestamp', 0)
+        logger.info(f"Using file cached modules data for initial render")
         return render_template('modules.html', modules=_cached_modules, unique_count=_cached_unique_count)
     
     # No cache or expired - return empty page, JavaScript will fetch
@@ -168,21 +215,33 @@ def modules_list():
     if not LMODULE_AVAILABLE:
         return jsonify({'modules': [], 'unique_count': 0, 'error': 'lmodule not available'})
     
-    # Check cache
+    # Check in-memory cache first
     current_time = time.time()
     cache_age = current_time - _cache_timestamp
     
     if _cached_modules is not None and cache_age < CACHE_TTL:
-        logger.info(f"Returning cached data from /list endpoint (age: {cache_age:.1f}s)")
+        logger.info(f"Returning in-memory cached data (age: {cache_age:.1f}s)")
         return jsonify({
             'modules': _cached_modules,
             'unique_count': _cached_unique_count
         })
     
-    # If we have stale cache, return it immediately while refreshing in background
+    # If in-memory cache is stale, check file cache
+    file_cache = _load_cache_from_file()
+    if file_cache:
+        # Load from file and update in-memory cache
+        _cached_modules = file_cache.get('modules', [])
+        _cached_unique_count = file_cache.get('unique_count', 0)
+        _cache_timestamp = file_cache.get('timestamp', 0)
+        logger.info(f"Loaded cache from file, returning data")
+        return jsonify({
+            'modules': _cached_modules,
+            'unique_count': _cached_unique_count
+        })
+    
+    # If we have stale in-memory cache, return it
     if _cached_modules is not None:
-        logger.info("Returning stale cache immediately, will refresh in background")
-        # Return stale data immediately to prevent timeout
+        logger.info("Returning stale in-memory cache")
         return jsonify({
             'modules': _cached_modules,
             'unique_count': _cached_unique_count,
@@ -190,8 +249,18 @@ def modules_list():
             'message': 'Refreshing data, please refresh page in a moment'
         })
     
-    # No cache at all - try to create Spider
-    # This may take 30-60 seconds, but we'll let it complete
+    # No cache at all - check if Spider is already initializing
+    global _spider_initializing
+    if _spider_initializing:
+        logger.info("Spider is already being initialized, returning wait message")
+        return jsonify({
+            'modules': [],
+            'unique_count': 0,
+            'loading': True,
+            'message': 'Module system is being initialized. Please wait and the page will automatically retry.'
+        })
+    
+    # No cache and not initializing - start initialization
     logger.info("No cache available, creating Spider (this may take 30-60 seconds)")
     unique_count = 0
     modules_list = []
@@ -202,12 +271,12 @@ def modules_list():
         
         # If Spider is being initialized by another request, return "still initializing" message
         if spider is None:
-            logger.info("Spider is being initialized by another request, returning wait message")
+            logger.info("Spider initialization started by another request, returning wait message")
             return jsonify({
                 'modules': [],
                 'unique_count': 0,
                 'loading': True,
-                'message': 'Module system is being initialized by another request. Please wait and the page will automatically retry.'
+                'message': 'Module system is being initialized. Please wait and the page will automatically retry.'
             })
         
         logger.info("Getting unique module names")
@@ -220,11 +289,12 @@ def modules_list():
         modules_list = get_available_modules(spider=spider)
         logger.info(f"Retrieved {len(modules_list)} modules")
         
-        # Update cache
+        # Update in-memory and file cache
         _cached_modules = modules_list
         _cached_unique_count = unique_count
         _cache_timestamp = current_time
-        logger.info(f"Cache updated with {len(modules_list)} modules")
+        _save_cache_to_file(modules_list, unique_count)
+        logger.info(f"Cache updated in memory and file with {len(modules_list)} modules")
             
     except Exception as e:
         logger.error(f"Error in modules_list endpoint: {e}", exc_info=True)
