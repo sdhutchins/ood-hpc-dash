@@ -1,5 +1,23 @@
 {% extends "base.html" %}
-
 {% block content %}
-<p class="text-muted">View all your environment variables and conda environments here.</p>
+<h2>Conda Environments</h2>
+{% if warning %}
+<div class="alert alert-warning">{{ warning }}</div>
+{% endif %}
+<table class="table table-sm table-hover">
+  <thead class="table-light">
+    <tr><th>Name</th><th>Path</th></tr>
+  </thead>
+  <tbody>
+  {% for env in envs %}
+    <tr>
+      <td>{{ env.name }}</td>
+      <td><code>{{ env.path }}</code></td>
+    </tr>
+  {% endfor %}
+  {% if envs|length == 0 %}
+    <tr><td colspan="2" class="text-muted">No environments found.</td></tr>
+  {% endif %}
+  </tbody>
+</table>
 {% endblock %}

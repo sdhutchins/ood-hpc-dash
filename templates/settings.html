@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Settings</h2>
+<p class="text-muted">Configure navbar color and paths.</p>
+
+<div class="mb-3">
+  <span class="text-muted">Signed in as: <strong>{{ username or 'user' }}</strong></span>
+</div>
+
+<form action="{{ url_for('settings.save_settings') }}" method="post" class="mt-3">
+    <div class="mb-3">
+        <label for="navbar_color" class="form-label">Navbar Color</label>
+        <select id="navbar_color" name="navbar_color" class="form-select" aria-label="Select navbar color">
+            {% for value, label in allowed_nav_colors %}
+            <option value="{{ value }}" data-color="{{ value }}" {% if settings.navbar_color == value %}selected{% endif %}>
+                {{ label }} ({{ value }})
+            </option>
+            {% endfor %}
+        </select>
+        <div class="form-text">Choose from approved light colors only.</div>
+        <div class="mt-2">
+          <span class="badge rounded-pill text-dark" id="navbar_color_preview" style="background-color: {{ settings.navbar_color }};">Preview</span>
+        </div>
+    </div>
+
+    <div class="mb-3">
+        <label for="code_editor_path" class="form-label">Code Editor Path</label>
+        <input type="text" class="form-control" id="code_editor_path" name="code_editor_path"
+               value="{{ settings.code_editor_path }}" placeholder="/path/to/project">
+        <div class="form-text">Absolute path the code editor should use.</div>
+    </div>
+
+    <div class="mb-3">
+        <label for="conda_envs_paths" class="form-label">Conda Env Paths</label>
+        <textarea class="form-control" id="conda_envs_paths" name="conda_envs_paths" rows="3"
+                  placeholder="$HOME/.conda/envs&#10;$HOME/miniconda3/envs">{% for p in settings.conda_envs_paths %}{{ p }}
+{% endfor %}</textarea>
+        <div class="form-text">One path per line. Environment variables like $HOME are allowed.</div>
+    </div>
+
+    <button type="submit" class="btn btn-primary">Save</button>
+</form>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  const select = document.getElementById('navbar_color');
+  const preview = document.getElementById('navbar_color_preview');
+  if (select && preview) {
+    select.addEventListener('change', function() {
+      const color = this.value;
+      preview.style.backgroundColor = color;
+    });
+  }
+});
+</script>
+{% endblock %}

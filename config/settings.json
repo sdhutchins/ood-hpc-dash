@@ -1,0 +1,7 @@
+{
+    "navbar_color": "#e3f2fd",
+    "code_editor_path": "/data/project/worthey_lab/projects/PAH_RHamid/support",
+    "conda_envs_paths": [
+      "$HOME/.conda"
+    ]
+  }

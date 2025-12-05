@@ -11,19 +11,43 @@ import os
 # Third-party imports
 from flask import Flask, render_template
 import flaskcode
+import json
 
 # Local imports
 from blueprints.envs import envs_bp
 from blueprints.jobs import jobs_bp
 from blueprints.modules import modules_bp
 from blueprints.viewer import viewer_bp
+from blueprints.settings import settings_bp
 
+SETTINGS_FILE = Path("config/settings.json")
+
+
+def _load_settings() -> dict:
+    """Load settings from JSON file with sensible defaults."""
+    defaults = {
+        "navbar_color": "#e3f2fd",
+        "code_editor_path": str(Path.cwd()),
+        "conda_envs_paths": ["$HOME/.conda/envs"],
+    }
+    try:
+        if SETTINGS_FILE.exists():
+            with SETTINGS_FILE.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            return {**defaults, **data}
+    except Exception:
+        return defaults
+    return defaults
+
+# Configure the app
 app = Flask(__name__)
 
-# Configure FlaskCode
+# Load settings once on startup
+settings_data = _load_settings()
+
+# Configure FlaskCode using settings
 app.config.from_object(flaskcode.default_config)
-# Set to current app directory (change to a specific project directory if needed)
-app.config['FLASKCODE_RESOURCE_BASEPATH'] = "/data/project/worthey_lab/projects/PAH_RHamid/support"
+app.config['FLASKCODE_RESOURCE_BASEPATH'] = settings_data.get("code_editor_path", str(Path.cwd()))
 app.register_blueprint(flaskcode.blueprint, url_prefix='/flaskcode')
 
 # Create logs directory if it doesn't exist
@@ -107,6 +131,14 @@ app.register_blueprint(modules_bp)
 app.register_blueprint(jobs_bp)
 app.register_blueprint(envs_bp)
 app.register_blueprint(viewer_bp)
+app.register_blueprint(settings_bp)
+
+
+@app.context_processor
+def inject_navbar_color():
+    """Make navbar_color available to all templates."""
+    navbar_color = settings_data.get("navbar_color", "#e3f2fd")
+    return {"navbar_color": navbar_color}
 
 @app.route("/")
 def index():
