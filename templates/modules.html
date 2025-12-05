@@ -65,7 +65,9 @@
                                     <td>
                                         {% if module.versions %}
                                             {% for version in module.versions %}
-                                                <span class="badge bg-secondary me-1 mb-1">{{ version }}</span>
+                                                <button type="button" class="btn btn-outline-secondary btn-sm copy-version me-1 mb-1" data-version="{{ version }}" title="Click to copy: module load {{ version }}">
+                                                    <i class="fa-regular fa-copy me-1"></i><code class="text-reset">{{ version }}</code>
+                                                </button>
                                             {% endfor %}
                                         {% else %}
                                             <span class="text-muted">-</span>
@@ -189,7 +191,7 @@
                 const versionsCell = document.createElement('td');
                 if (module.versions && module.versions.length > 0) {
                     versionsCell.innerHTML = module.versions.map(v => 
-                        '<span class="badge bg-secondary me-1 mb-1">' + escapeHtml(v) + '</span>'
+                        '<button type="button" class="btn btn-outline-secondary btn-sm copy-version me-1 mb-1" data-version="' + escapeHtml(v) + '" title="Click to copy: module load ' + escapeHtml(v) + '"><i class="fa-regular fa-copy me-1"></i><code class="text-reset">' + escapeHtml(v) + '</code></button>'
                     ).join('');
                 } else {
                     versionsCell.innerHTML = '<span class="text-muted">-</span>';
@@ -202,6 +204,8 @@
             
             // Apply current filters
             applyFilters();
+            // Wire copy buttons
+            attachCopyHandlers();
         }
         
         function applyFilters() {
@@ -307,6 +311,37 @@
         if (categoryFilter) {
             categoryFilter.addEventListener('change', applyFilters);
         }
+        function copyText(text) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                return navigator.clipboard.writeText(text);
+            }
+            return Promise.reject(new Error('Clipboard API not available'));
+        }
+
+        function attachCopyHandlers() {
+            const buttons = document.querySelectorAll('.copy-version');
+            buttons.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const version = btn.getAttribute('data-version');
+                    if (!version) return;
+                    copyText(`module load ${version}`)
+                        .then(() => {
+                            btn.classList.add('btn-success', 'text-white');
+                            btn.classList.remove('btn-outline-secondary');
+                            setTimeout(() => {
+                                btn.classList.remove('btn-success', 'text-white');
+                                btn.classList.add('btn-outline-secondary');
+                            }, 1200);
+                        })
+                        .catch(err => {
+                            console.error('Copy failed', err);
+                        });
+                });
+            });
+        }
+
+        // Initial wiring for server-rendered modules
+        attachCopyHandlers();
     });
 })();
 </script>
