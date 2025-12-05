@@ -34,37 +34,94 @@
                 <p class="mt-3 text-muted">Loading modules...</p>
             </div>
         </div>
-        <div id="modulesCard" class="card {% if not modules or modules|length == 0 %}d-none{% endif %}">
-            <div class="card-body">
-                <div class="table-responsive">
-                    <table class="table table-hover table-sm">
-                        <thead class="table-light">
-                            <tr>
-                                <th scope="col">Name</th>
-                                <th scope="col">Versions Available</th>
-                            </tr>
-                        </thead>
-                        <tbody id="modulesTableBody">
-                            {% if modules %}
-                            {% for module in modules %}
-                            <tr class="module-row">
-                                <td><code>{{ module.name }}</code></td>
-                                <td>
-                                    {% if module.versions %}
-                                        {% for version in module.versions %}
-                                            <span class="badge bg-secondary me-1 mb-1">{{ version }}</span>
+        <div id="modulesCard" class="{% if not modules or modules|length == 0 %}d-none{% endif %}">
+            {% if modules_by_category %}
+            <div class="accordion" id="modulesAccordion">
+                {% for category in category_order %}
+                {% if category in modules_by_category and modules_by_category[category]|length > 0 %}
+                <div class="accordion-item">
+                    <h2 class="accordion-header" id="heading{{ loop.index }}">
+                        <button class="accordion-button {% if loop.index > 1 %}collapsed{% endif %}" 
+                                type="button" 
+                                data-bs-toggle="collapse" 
+                                data-bs-target="#collapse{{ loop.index }}"
+                                aria-expanded="{% if loop.index == 1 %}true{% else %}false{% endif %}"
+                                aria-controls="collapse{{ loop.index }}">
+                            <strong>{{ category }}</strong>
+                            <span class="badge bg-secondary ms-2">{{ modules_by_category[category]|length }}</span>
+                        </button>
+                    </h2>
+                    <div id="collapse{{ loop.index }}" 
+                         class="accordion-collapse collapse {% if loop.index == 1 %}show{% endif %}"
+                         aria-labelledby="heading{{ loop.index }}"
+                         data-bs-parent="#modulesAccordion">
+                        <div class="accordion-body">
+                            <div class="table-responsive">
+                                <table class="table table-hover table-sm mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th scope="col" style="width: 30%;">Name</th>
+                                            <th scope="col">Versions Available</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="module-category-{{ loop.index }}">
+                                        {% for module in modules_by_category[category] %}
+                                        <tr class="module-row">
+                                            <td><code>{{ module.name }}</code></td>
+                                            <td>
+                                                {% if module.versions %}
+                                                    {% for version in module.versions %}
+                                                        <span class="badge bg-secondary me-1 mb-1">{{ version }}</span>
+                                                    {% endfor %}
+                                                {% else %}
+                                                    <span class="text-muted">-</span>
+                                                {% endif %}
+                                            </td>
+                                        </tr>
                                         {% endfor %}
-                                    {% else %}
-                                        <span class="text-muted">-</span>
-                                    {% endif %}
-                                </td>
-                            </tr>
-                            {% endfor %}
-                            {% endif %}
-                        </tbody>
-                    </table>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-hover table-sm">
+                            <thead class="table-light">
+                                <tr>
+                                    <th scope="col">Name</th>
+                                    <th scope="col">Versions Available</th>
+                                </tr>
+                            </thead>
+                            <tbody id="modulesTableBody">
+                                {% if modules %}
+                                {% for module in modules %}
+                                <tr class="module-row">
+                                    <td><code>{{ module.name }}</code></td>
+                                    <td>
+                                        {% if module.versions %}
+                                            {% for version in module.versions %}
+                                                <span class="badge bg-secondary me-1 mb-1">{{ version }}</span>
+                                            {% endfor %}
+                                        {% else %}
+                                            <span class="text-muted">-</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                                {% endif %}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
+            {% endif %}
         </div>
     </div>
 </div>
@@ -87,7 +144,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     document.getElementById('loadingCard').classList.add('d-none');
                     document.getElementById('modulesCard').classList.remove('d-none');
                     document.getElementById('uniqueCount').textContent = data.unique_count || data.modules.length;
-                    displayModules(data.modules);
+                    displayModules(data);
                 }
             })
             .catch(error => {
@@ -99,29 +156,126 @@ document.addEventListener('DOMContentLoaded', function() {
     fetchModules();
     {% endif %}
     
-    function displayModules(modules) {
-        const tbody = document.getElementById('modulesTableBody');
-        tbody.innerHTML = '';
+    function displayModules(data) {
+        // Handle both old format (array) and new format (object with categories)
+        let modules, modulesByCategory, categoryOrder;
         
-        modules.forEach(module => {
-            const row = document.createElement('tr');
-            row.className = 'module-row';
-            
-            const nameCell = document.createElement('td');
-            nameCell.innerHTML = '<code>' + escapeHtml(module.name) + '</code>';
-            
-            const versionsCell = document.createElement('td');
-            if (module.versions && module.versions.length > 0) {
-                versionsCell.innerHTML = module.versions.map(v => 
-                    '<span class="badge bg-secondary me-1 mb-1">' + escapeHtml(v) + '</span>'
-                ).join('');
-            } else {
-                versionsCell.innerHTML = '<span class="text-muted">-</span>';
+        if (Array.isArray(data)) {
+            // Old format - just an array of modules
+            modules = data;
+            modulesByCategory = null;
+        } else {
+            // New format - has categories
+            modules = data.modules || [];
+            modulesByCategory = data.modules_by_category || null;
+            categoryOrder = data.category_order || [];
+        }
+        
+        if (modulesByCategory && categoryOrder) {
+            // Display with categories
+            displayModulesByCategory(modulesByCategory, categoryOrder);
+        } else {
+            // Fallback to simple table
+            const tbody = document.getElementById('modulesTableBody');
+            if (tbody) {
+                tbody.innerHTML = '';
+                
+                modules.forEach(module => {
+                    const row = document.createElement('tr');
+                    row.className = 'module-row';
+                    
+                    const nameCell = document.createElement('td');
+                    nameCell.innerHTML = '<code>' + escapeHtml(module.name) + '</code>';
+                    
+                    const versionsCell = document.createElement('td');
+                    if (module.versions && module.versions.length > 0) {
+                        versionsCell.innerHTML = module.versions.map(v => 
+                            '<span class="badge bg-secondary me-1 mb-1">' + escapeHtml(v) + '</span>'
+                        ).join('');
+                    } else {
+                        versionsCell.innerHTML = '<span class="text-muted">-</span>';
+                    }
+                    
+                    row.appendChild(nameCell);
+                    row.appendChild(versionsCell);
+                    tbody.appendChild(row);
+                });
+            }
+        }
+    }
+    
+    function displayModulesByCategory(modulesByCategory, categoryOrder) {
+        const accordion = document.getElementById('modulesAccordion');
+        if (!accordion) return;
+        
+        accordion.innerHTML = '';
+        
+        categoryOrder.forEach((category, index) => {
+            if (!modulesByCategory[category] || modulesByCategory[category].length === 0) {
+                return;
             }
             
-            row.appendChild(nameCell);
-            row.appendChild(versionsCell);
-            tbody.appendChild(row);
+            const isFirst = index === 0;
+            const accordionItem = document.createElement('div');
+            accordionItem.className = 'accordion-item';
+            
+            accordionItem.innerHTML = `
+                <h2 class="accordion-header" id="heading${index + 1}">
+                    <button class="accordion-button ${isFirst ? '' : 'collapsed'}" 
+                            type="button" 
+                            data-bs-toggle="collapse" 
+                            data-bs-target="#collapse${index + 1}"
+                            aria-expanded="${isFirst}"
+                            aria-controls="collapse${index + 1}">
+                        <strong>${escapeHtml(category)}</strong>
+                        <span class="badge bg-secondary ms-2">${modulesByCategory[category].length}</span>
+                    </button>
+                </h2>
+                <div id="collapse${index + 1}" 
+                     class="accordion-collapse collapse ${isFirst ? 'show' : ''}"
+                     aria-labelledby="heading${index + 1}"
+                     data-bs-parent="#modulesAccordion">
+                    <div class="accordion-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover table-sm mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th scope="col" style="width: 30%;">Name</th>
+                                        <th scope="col">Versions Available</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="module-category-${index + 1}">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            accordion.appendChild(accordionItem);
+            
+            // Populate table rows
+            const tbody = accordionItem.querySelector('tbody');
+            modulesByCategory[category].forEach(module => {
+                const row = document.createElement('tr');
+                row.className = 'module-row';
+                
+                const nameCell = document.createElement('td');
+                nameCell.innerHTML = '<code>' + escapeHtml(module.name) + '</code>';
+                
+                const versionsCell = document.createElement('td');
+                if (module.versions && module.versions.length > 0) {
+                    versionsCell.innerHTML = module.versions.map(v => 
+                        '<span class="badge bg-secondary me-1 mb-1">' + escapeHtml(v) + '</span>'
+                    ).join('');
+                } else {
+                    versionsCell.innerHTML = '<span class="text-muted">-</span>';
+                }
+                
+                row.appendChild(nameCell);
+                row.appendChild(versionsCell);
+                tbody.appendChild(row);
+            });
         });
     }
     
@@ -136,15 +290,47 @@ document.addEventListener('DOMContentLoaded', function() {
         searchInput.addEventListener('input', function() {
             const searchTerm = this.value.toLowerCase().trim();
             const rows = document.querySelectorAll('.module-row');
+            const accordionItems = document.querySelectorAll('.accordion-item');
+            
             let visibleCount = 0;
+            let visibleCategories = new Set();
             
             rows.forEach(row => {
                 const text = row.textContent.toLowerCase();
                 if (text.includes(searchTerm)) {
                     row.style.display = '';
                     visibleCount++;
+                    // Find which category this row belongs to
+                    const accordionItem = row.closest('.accordion-item');
+                    if (accordionItem) {
+                        visibleCategories.add(accordionItem);
+                    }
                 } else {
                     row.style.display = 'none';
+                }
+            });
+            
+            // Show/hide accordion items based on whether they have visible rows
+            accordionItems.forEach(item => {
+                const visibleRows = item.querySelectorAll('.module-row[style=""]');
+                const hasVisible = visibleRows.length > 0 || searchTerm === '';
+                
+                if (hasVisible) {
+                    item.style.display = '';
+                    // Auto-expand if search term matches
+                    if (searchTerm && visibleRows.length > 0) {
+                        const collapse = item.querySelector('.collapse');
+                        const button = item.querySelector('.accordion-button');
+                        if (collapse && !collapse.classList.contains('show')) {
+                            collapse.classList.add('show');
+                            if (button) {
+                                button.classList.remove('collapsed');
+                                button.setAttribute('aria-expanded', 'true');
+                            }
+                        }
+                    }
+                } else {
+                    item.style.display = 'none';
                 }
             });
         });
