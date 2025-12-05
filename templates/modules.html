@@ -89,27 +89,16 @@ document.addEventListener('DOMContentLoaded', function() {
     let allModules = [];
     const hasModules = {% if modules and modules|length > 0 %}true{% else %}false{% endif %};
     let isRetrying = false;
-    let pollStartTime = null;
-    const MAX_WAIT_TIME = 120000; // 2 minutes (120 seconds)
     const POLL_INTERVAL = 10000; // 10 seconds
     
     // Fetch modules if page was loaded empty
     if (!hasModules) {
-        pollStartTime = Date.now();
         fetchModules();
     }
     
     async function fetchModules() {
         // Prevent multiple simultaneous retries
         if (isRetrying) {
-            return;
-        }
-        
-        // Check if we've exceeded max wait time
-        if (pollStartTime && (Date.now() - pollStartTime) > MAX_WAIT_TIME) {
-            loadingIndicator.classList.add('d-none');
-            errorMessage.classList.remove('d-none');
-            document.getElementById('errorText').textContent = 'Timeout: Module system initialization took too long. Please refresh the page.';
             return;
         }
         try {
@@ -120,10 +109,11 @@ document.addEventListener('DOMContentLoaded', function() {
             if (tableContainer) tableContainer.classList.add('d-none');
             
             // Update loading message with elapsed time
-            const elapsed = pollStartTime ? Math.floor((Date.now() - pollStartTime) / 1000) : 0;
             const loadingText = document.querySelector('#loadingIndicator p');
             if (loadingText) {
-                loadingText.textContent = `Loading modules... Initializing module system (${elapsed}s elapsed, checking every 10 seconds, timeout in ${Math.max(0, 120 - elapsed)}s). You can navigate away and return later.`;
+                const match = loadingText.textContent.match(/(\d+)s elapsed/);
+                const elapsed = match ? parseInt(match[1]) + 10 : 10;
+                loadingText.textContent = `Loading modules... Initializing module system (${elapsed}s elapsed, checking every 10 seconds). You can navigate away and return later.`;
             }
             
             const response = await fetch('{{ url_for("modules.modules_list") }}');
@@ -180,7 +170,6 @@ document.addEventListener('DOMContentLoaded', function() {
             
             // Success! Reset everything
             isRetrying = false;
-            pollStartTime = null;
             loadingIndicator.classList.add('d-none');
             // Hide initial cache message if it exists
             const initialCacheMsg = document.getElementById('initialCacheMessage');
