@@ -1,45 +1,51 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h2>Settings</h2>
-<p class="text-muted">Configure navbar color and paths.</p>
-
-<div class="mb-3">
-  <span class="text-muted">Signed in as: <strong>{{ username or 'user' }}</strong></span>
-</div>
+<h2 class="pb-2 mb-4 border-bottom">Settings</h2>
+<p class="mb-4 text-muted">Configure navbar color and paths.</p>
 
 <form action="{{ url_for('settings.save_settings') }}" method="post" class="mt-3">
-    <div class="mb-3">
-        <label for="navbar_color" class="form-label">Navbar Color</label>
-        <select id="navbar_color" name="navbar_color" class="form-select" aria-label="Select navbar color">
-            {% for value, label in allowed_nav_colors %}
-            <option value="{{ value }}" data-color="{{ value }}" {% if settings.navbar_color == value %}selected{% endif %}>
-                {{ label }}
-            </option>
-            {% endfor %}
-        </select>
-        <div class="form-text">Choose from approved light colors only.</div>
-        <div class="mt-2">
-          <span class="badge rounded-pill text-dark" id="navbar_color_preview" style="background-color: {{ settings.navbar_color }};">Preview</span>
-        </div>
-    </div>
 
-    <div class="mb-3">
-        <label for="code_editor_path" class="form-label">Code Editor Path</label>
-        <input type="text" class="form-control" id="code_editor_path" name="code_editor_path"
-               value="{{ settings.code_editor_path }}" placeholder="/path/to/project">
-        <div class="form-text">Absolute path the code editor should use.</div>
-    </div>
+  <div class="card mb-4 shadow-sm" style="border-radius: 10px;">
+    <div class="card-body">
+      <p class="text-muted small mb-3">Signed in as: <strong>{{ username or 'user' }}</strong></p>
 
-    <div class="mb-3">
-        <label for="conda_envs_paths" class="form-label">Conda Env Paths</label>
-        <textarea class="form-control" id="conda_envs_paths" name="conda_envs_paths" rows="3"
-                  placeholder="$HOME/.conda/envs&#10;$HOME/miniconda3/envs">{% for p in settings.conda_envs_paths %}{{ p }}
+      <label for="navbar_color" class="form-label fw-semibold">Navbar Color</label>
+      <select id="navbar_color" name="navbar_color" class="form-select mb-3" aria-label="Select navbar color">
+          {% for value, label in allowed_nav_colors %}
+          <option value="{{ value }}" data-color="{{ value }}" {% if settings.navbar_color == value %}selected{% endif %}>
+              {{ label }}
+          </option>
+          {% endfor %}
+      </select>
+      <div class="form-text">Choose from approved light colors only.</div>
+      <div class="mt-2">
+        <span class="badge rounded-pill text-dark" id="navbar_color_preview" style="background-color: {{ settings.navbar_color }};">Preview</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mb-4 shadow-sm" style="border-radius: 10px;">
+    <div class="card-body">
+      <label for="code_editor_path" class="form-label fw-semibold">Code Editor Path</label>
+      <input type="text" class="form-control mb-2" id="code_editor_path" name="code_editor_path"
+             value="{{ settings.code_editor_path }}" placeholder="/absolute/path">
+      <div class="form-text">Absolute path the code editor should use.</div>
+    </div>
+  </div>
+
+  <div class="card mb-4 shadow-sm" style="border-radius: 10px;">
+    <div class="card-body">
+      <label for="conda_envs_paths" class="form-label fw-semibold">Conda Env Paths</label>
+      <textarea class="form-control mb-2" id="conda_envs_paths" name="conda_envs_paths" rows="3"
+                placeholder="$HOME/.conda&#10;$HOME/miniconda3/envs">{% for p in settings.conda_envs_paths %}{{ p }}
 {% endfor %}</textarea>
-        <div class="form-text">One path per line. Environment variables like $HOME are allowed.</div>
+      <div class="form-text">One path per line. Environment variables like $HOME are allowed.</div>
     </div>
+  </div>
 
-    <button type="submit" class="btn btn-primary">Save</button>
+  <button type="submit" class="btn btn-primary px-4 py-2" style="border-radius: 6px;">Save</button>
+
 </form>
 
 <script>

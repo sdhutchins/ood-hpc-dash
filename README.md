@@ -2,7 +2,7 @@
 
 # Open OnDemand HPC Dashboard
 
-This is a Flask app that serves as a dashboard on the CHEAHA HPC.
+This is a Flask app that serves as a dashboard on the Cheaha HPC.
 
 So far, you can:
 - View all modules available by searching and filtering by categories
