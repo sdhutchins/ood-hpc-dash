@@ -21,7 +21,7 @@ file_handler.setLevel(logging.INFO)
 stream_handler = logging.StreamHandler(sys.stderr)
 stream_handler.setLevel(logging.INFO)
 
-formatter = logging.Formatter('[%(asctime)s - %(name)s] - [%(levelname)s] %(message)s')
+formatter = logging.Formatter('[%(name)s - %(asctime)s] - [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 file_handler.setFormatter(formatter)
 stream_handler.setFormatter(formatter)
 
@@ -32,7 +32,7 @@ root_logger.addHandler(file_handler)
 root_logger.addHandler(stream_handler)
 
 # Log that application is starting
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__.capitalize())
 logger.info("Application initialized - logging configured")
 
 # Register blueprints

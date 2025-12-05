@@ -17,11 +17,14 @@ modules_bp = Blueprint('modules', __name__, url_prefix='/modules')
 # Logger for the modules blueprint
 logger = logging.getLogger(__name__)
 
-def get_available_modules() -> List[Dict[str, str]]:
+def get_available_modules(spider=None) -> List[Dict[str, str]]:
     """
     Get list of available modules using lmodule Spider.
     First gets unique module names, then retrieves all modules for those names.
     Returns list of dictionaries with name, version, and location.
+    
+    Args:
+        spider: Optional Spider instance to reuse. If None, creates a new one.
     """
     logger.info("get_available_modules() called")
     
@@ -30,13 +33,15 @@ def get_available_modules() -> List[Dict[str, str]]:
         return []
     
     try:
-        logger.info("Creating Spider instance in get_available_modules")
-        try:
-            spider = Spider()
-            logger.info("Spider instance created in get_available_modules")
-        except Exception as spider_error:
-            logger.error(f"Failed to create Spider in get_available_modules: {spider_error}", exc_info=True)
-            raise
+        # Create Spider if not provided
+        if spider is None:
+            logger.info("Creating Spider instance in get_available_modules")
+            try:
+                spider = Spider()
+                logger.info("Spider instance created in get_available_modules")
+            except Exception as spider_error:
+                logger.error(f"Failed to create Spider in get_available_modules: {spider_error}", exc_info=True)
+                raise
         
         # Get unique module names (e.g., ['CUDA', 'lmod', 'GCC'])
         logger.info("Calling spider.get_names()")
@@ -99,8 +104,13 @@ def modules():
         logger.error("lmodule package not available")
         return render_template('modules.html', modules=[], unique_count=0)
     
+    # Create Spider once and reuse it
+    spider = None
+    unique_count = 0
+    modules_list = []
+    
     try:
-        logger.info("Creating Spider instance")
+        logger.info("Creating Spider instance (will be reused)")
         try:
             spider = Spider()
             logger.info("Spider instance created successfully")
@@ -117,16 +127,19 @@ def modules():
         except Exception as names_error:
             logger.error(f"Error calling get_names(): {names_error}", exc_info=True)
             raise
+        
+        # Reuse the same spider instance
+        logger.info("Calling get_available_modules() with existing spider")
+        try:
+            modules_list = get_available_modules(spider=spider)
+            logger.info(f"Retrieved {len(modules_list)} modules")
+        except Exception as modules_error:
+            logger.error(f"Error in get_available_modules: {modules_error}", exc_info=True)
+            modules_list = []
+            
     except Exception as e:
-        logger.error(f"Error getting unique names count: {e}", exc_info=True)
+        logger.error(f"Error in modules route: {e}", exc_info=True)
         unique_count = 0
-    
-    try:
-        logger.info("Calling get_available_modules()")
-        modules_list = get_available_modules()
-        logger.info(f"Retrieved {len(modules_list)} modules")
-    except Exception as e:
-        logger.error(f"Error in get_available_modules: {e}", exc_info=True)
         modules_list = []
     
     logger.info("Rendering modules template")
