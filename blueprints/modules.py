@@ -197,6 +197,8 @@ def modules():
     """Render the modules page."""
     global _cached_modules, _cached_unique_count, _cache_timestamp
     
+    logger.info("Modules page route accessed")
+    
     if not LMODULE_AVAILABLE:
         return render_template('modules.html', modules=[], unique_count=0)
     
@@ -214,6 +216,8 @@ def modules_list():
     """Return JSON list of available modules."""
     global _cached_modules, _cached_unique_count, _cache_timestamp
     
+    logger.info("Modules list endpoint called")
+    
     if not LMODULE_AVAILABLE:
         return jsonify({'modules': [], 'unique_count': 0, 'error': 'lmodule not available'})
     
@@ -223,6 +227,7 @@ def modules_list():
         _cached_modules = file_cache.get('modules', [])
         _cached_unique_count = file_cache.get('unique_count', 0)
         _cache_timestamp = file_cache.get('timestamp', 0)
+        logger.info(f"Returning {len(_cached_modules)} modules from cache")
         return jsonify({
             'modules': _cached_modules,
             'unique_count': _cached_unique_count
@@ -230,6 +235,7 @@ def modules_list():
     
     # Check if initialization in progress
     if _is_initializing():
+        logger.info("Initialization in progress, returning wait message")
         return jsonify({
             'modules': [],
             'unique_count': 0,
@@ -238,6 +244,7 @@ def modules_list():
         })
     
     # Start initialization
+    logger.info("Starting Spider initialization")
     _set_initializing()
     
     try:
@@ -253,6 +260,8 @@ def modules_list():
         _cached_unique_count = unique_count
         _cache_timestamp = time.time()
         _save_cache_to_file(modules_list, unique_count)
+        
+        logger.info(f"Initialization complete: {unique_count} unique, {len(modules_list)} total modules")
         
         return jsonify({
             'modules': modules_list,
