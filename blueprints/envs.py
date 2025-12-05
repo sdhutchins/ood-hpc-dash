@@ -72,8 +72,8 @@ def _categorize_env(path: str) -> str:
         return "Conda"
     if lower.startswith("/scratch"):
         return "Scratch"
-    if lower.startswith("/data/project"):
-        return "Project"
+    if "snakemake" in lower:
+        return "Snakemake"
     if lower.startswith("/home"):
         return "Home"
     return "Other"
@@ -89,13 +89,13 @@ def _group_envs(envs: list[dict]) -> tuple[dict, list[str]]:
     for cat_envs in grouped.values():
         cat_envs.sort(key=lambda e: e["name"].lower())
     # Order categories
-    order = ["Project", "Home", "Conda", "Mamba", "Scratch", "Other"]
+    order = ["Conda", "Mamba", "Snakemake", "Home", "Scratch", "Other"]
     ordered = [c for c in order if c in grouped] + [c for c in grouped if c not in order]
     return grouped, ordered
 
 # Category display metadata
 CATEGORY_META = {
-    "Project": {"title": "Project Conda Environments", "icon": "fa-folder"},
+    "Snakemake": {"title": "Snakemake Conda Environments", "icon": "fa-folder"},
     "Home": {"title": "Home Conda Environments", "icon": "fa-folder"},
     "Conda": {"title": "Conda Environments", "icon": "fa-folder"},
     "Mamba": {"title": "Mamba Environments", "icon": "fa-folder"},
