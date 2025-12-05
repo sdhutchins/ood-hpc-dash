@@ -1,6 +1,6 @@
 The MIT License (MIT)
 
-Copyright (c) 2015 Phusion
+Copyright (c) 2025 Shaurita D. Hutchins
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

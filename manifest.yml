@@ -1,5 +1,5 @@
 ---
-name: Flask Template
+name: HPC Dashboard
 category: Interactive Apps
 description: |-
-  Template Python application using Flask.
+  HPC Dashboard for the CHEAHA HPC.
