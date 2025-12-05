@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h2 class="mb-2">Available Modules</h2>
+        <p class="text-muted">Browse available environment modules on the HPC system.</p>
+    </div>
+</div>
+
+<div class="row mb-3">
+    <div class="col-md-6">
+        <input 
+            type="text" 
+            id="moduleSearch" 
+            placeholder="Search modules..." 
+            class="form-control"
+        >
+    </div>
+    <div class="col-md-6 d-flex align-items-center">
+        <small class="text-muted">
+            <span id="moduleCount">{{ modules|length }}</span> modules available
+        </small>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover table-sm">
+                <thead class="table-light">
+                    <tr>
+                        <th scope="col">Module Name</th>
+                    </tr>
+                </thead>
+                <tbody id="moduleTableBody">
+                    {% for module in modules %}
+                    <tr class="module-row">
+                        <td><code>{{ module }}</code></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div id="noResults" class="text-center py-4 d-none">
+            <p class="text-muted">No modules found matching your search.</p>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const searchInput = document.getElementById('moduleSearch');
+    const rows = document.querySelectorAll('.module-row');
+    const moduleCount = document.getElementById('moduleCount');
+    const noResults = document.getElementById('noResults');
+    
+    searchInput.addEventListener('input', function() {
+        const searchTerm = this.value.toLowerCase().trim();
+        let visibleCount = 0;
+        
+        rows.forEach(row => {
+            const text = row.textContent.toLowerCase();
+            if (text.includes(searchTerm)) {
+                row.style.display = '';
+                visibleCount++;
+            } else {
+                row.style.display = 'none';
+            }
+        });
+        
+        moduleCount.textContent = visibleCount;
+        
+        if (visibleCount === 0 && searchTerm !== '') {
+            noResults.classList.remove('d-none');
+        } else {
+            noResults.classList.add('d-none');
+        }
+    });
+});
+</script>
+{% endblock %}
