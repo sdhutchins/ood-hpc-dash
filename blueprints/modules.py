@@ -241,14 +241,9 @@ def modules_list():
     _set_initializing()
     
     try:
-        spider = _get_spider_instance()
-        if spider is None:
-            return jsonify({
-                'modules': [],
-                'unique_count': 0,
-                'loading': True,
-                'message': 'Module system is being initialized. Please wait and the page will automatically retry.'
-            })
+        # Create Spider instance directly (we've already checked lock and created it)
+        spider = Spider()
+        _cached_spider = spider
         
         unique_names = spider.get_names()
         unique_count = len(unique_names)
