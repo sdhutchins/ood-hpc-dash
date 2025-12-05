@@ -110,14 +110,23 @@ def _set_initializing() -> None:
         logger.error(f"Error creating lock file: {e}", exc_info=True)
 
 def _get_spider_instance():
-    """Get or create cached Spider instance."""
+    """Get or create cached Spider instance.
+    
+    Returns:
+        Spider instance if available, None if initialization is in progress.
+    """
     global _cached_spider, _spider_initializing
     
     if _cached_spider is not None:
         logger.info("Reusing cached Spider instance")
         return _cached_spider
     
-    # Check if another request is already initializing
+    # Check lock file first (survives app restarts)
+    if _is_initializing():
+        logger.info("Spider initialization in progress (lock file exists), returning None")
+        return None
+    
+    # Check in-memory flag (for same-process protection)
     if _spider_initializing:
         logger.info("Spider is already being initialized by another request, returning None")
         return None
