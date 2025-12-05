@@ -22,12 +22,15 @@ logger = logging.getLogger(__name__)
 def modules():
     """Render the modules page."""
     if not LMODULE_AVAILABLE:
-        return render_template('modules.html', modules=[])
+        return render_template('modules.html', modules=[], loading=False)
     
     try:
+        logger.info("Creating Spider instance (this may take 20+ seconds)...")
         spider = Spider()
+        logger.info("Spider created, getting module names...")
         module_names = spider.get_names()
-        return render_template('modules.html', modules=module_names)
+        logger.info(f"Found {len(module_names)} module names")
+        return render_template('modules.html', modules=module_names, loading=False)
     except Exception as e:
         logger.error(f"Error getting modules: {e}", exc_info=True)
-        return render_template('modules.html', modules=[])
+        return render_template('modules.html', modules=[], loading=False)
