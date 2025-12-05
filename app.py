@@ -41,6 +41,8 @@ def _load_settings() -> dict:
 
 # Configure the app
 app = Flask(__name__)
+# Secret key for session/flash; override with env SECRET_KEY in production
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
 
 # Load settings once on startup
 settings_data = _load_settings()
