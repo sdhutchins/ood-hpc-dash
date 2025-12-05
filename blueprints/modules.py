@@ -134,16 +134,43 @@ def modules():
         logger.error("lmodule package not available")
         return render_template('modules.html', modules=[], unique_count=0)
     
-    # Check if cache is still valid
+    # Always return page immediately, let JavaScript fetch data asynchronously
+    # This prevents blocking on Spider initialization
+    current_time = time.time()
+    cache_age = current_time - _cache_timestamp
+    
+    # If we have cached data, use it for initial render
+    if _cached_modules is not None and cache_age < CACHE_TTL:
+        logger.info(f"Using cached modules data for initial render (age: {cache_age:.1f}s)")
+        return render_template('modules.html', modules=_cached_modules, unique_count=_cached_unique_count)
+    
+    # No cache or expired - return empty page, JavaScript will fetch
+    logger.info("No cache available, returning empty page (data will load via JavaScript)")
+    return render_template('modules.html', modules=[], unique_count=0)
+
+@modules_bp.route('/list')
+def modules_list():
+    """Return JSON list of available modules."""
+    global _cached_modules, _cached_unique_count, _cache_timestamp
+    
+    logger.info("Modules list endpoint accessed")
+    
+    if not LMODULE_AVAILABLE:
+        return jsonify({'modules': [], 'unique_count': 0, 'error': 'lmodule not available'})
+    
+    # Check cache
     current_time = time.time()
     cache_age = current_time - _cache_timestamp
     
     if _cached_modules is not None and cache_age < CACHE_TTL:
-        logger.info(f"Using cached modules data (age: {cache_age:.1f}s)")
-        return render_template('modules.html', modules=_cached_modules, unique_count=_cached_unique_count)
+        logger.info(f"Returning cached data from /list endpoint (age: {cache_age:.1f}s)")
+        return jsonify({
+            'modules': _cached_modules,
+            'unique_count': _cached_unique_count
+        })
     
-    # Cache expired or doesn't exist, refresh it
-    logger.info("Cache expired or missing, refreshing modules data")
+    # Cache expired or missing - refresh it
+    logger.info("Cache expired or missing, refreshing in /list endpoint")
     unique_count = 0
     modules_list = []
     
@@ -177,19 +204,22 @@ def modules():
         logger.info(f"Cache updated with {len(modules_list)} modules")
             
     except Exception as e:
-        logger.error(f"Error in modules route: {e}", exc_info=True)
+        logger.error(f"Error in modules_list endpoint: {e}", exc_info=True)
         # Return cached data if available, even if expired
         if _cached_modules is not None:
             logger.warning("Returning stale cached data due to error")
-            return render_template('modules.html', modules=_cached_modules, unique_count=_cached_unique_count)
-        unique_count = 0
-        modules_list = []
+            return jsonify({
+                'modules': _cached_modules,
+                'unique_count': _cached_unique_count,
+                'stale': True
+            })
+        return jsonify({
+            'modules': [],
+            'unique_count': 0,
+            'error': str(e)
+        })
     
-    logger.info("Rendering modules template")
-    return render_template('modules.html', modules=modules_list, unique_count=unique_count)
-
-@modules_bp.route('/list')
-def modules_list():
-    """Return JSON list of available modules."""
-    modules = get_available_modules()
-    return jsonify({'modules': modules})
+    return jsonify({
+        'modules': modules_list,
+        'unique_count': unique_count
+    })
