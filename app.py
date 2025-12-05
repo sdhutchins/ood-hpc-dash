@@ -15,14 +15,25 @@ log_dir = Path('logs')
 log_dir.mkdir(exist_ok=True)
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s - %(name)s] - [%(levelname)s] %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stderr),  # Log to stderr (Passenger captures this)
-        logging.FileHandler('logs/app.log')  # Log to file
-    ]
-)
+file_handler = logging.FileHandler('logs/app.log')
+file_handler.setLevel(logging.INFO)
+
+stream_handler = logging.StreamHandler(sys.stderr)
+stream_handler.setLevel(logging.INFO)
+
+formatter = logging.Formatter('[%(asctime)s - %(name)s] - [%(levelname)s] %(message)s')
+file_handler.setFormatter(formatter)
+stream_handler.setFormatter(formatter)
+
+# Get root logger and configure
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.addHandler(file_handler)
+root_logger.addHandler(stream_handler)
+
+# Log that application is starting
+logger = logging.getLogger(__name__)
+logger.info("Application initialized - logging configured")
 
 # Register blueprints
 app.register_blueprint(modules_bp)
@@ -32,6 +43,7 @@ app.register_blueprint(viewer_bp)
 
 @app.route("/")
 def index():
+	logger.info("Home page accessed")
 	return render_template("index.html")
 
 if __name__ == "__main__":
