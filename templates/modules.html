@@ -324,13 +324,16 @@
                 btn.addEventListener('click', () => {
                     const version = btn.getAttribute('data-version');
                     if (!version) return;
+                    const originalHtml = btn.innerHTML;
                     copyText(`module load ${version}`)
                         .then(() => {
                             btn.classList.add('btn-success', 'text-white');
                             btn.classList.remove('btn-outline-secondary');
+                            btn.innerHTML = '<i class="fa-regular fa-copy me-1"></i>Copied!';
                             setTimeout(() => {
                                 btn.classList.remove('btn-success', 'text-white');
                                 btn.classList.add('btn-outline-secondary');
+                                btn.innerHTML = originalHtml;
                             }, 1200);
                         })
                         .catch(err => {
