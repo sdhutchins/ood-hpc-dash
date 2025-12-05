@@ -213,22 +213,28 @@
             if (rows.length === 0) return;
             
             // Create regex based on search term length and content
-            let searchRegex = null;
+            let nameRegex = null;
+            let versionRegex = null;
             if (searchTerm) {
                 const escaped = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                 const hasNumbers = /\d/.test(searchTerm);
                 
+                // Versions: search if contains numbers (any length) OR if 3+ characters
+                if (hasNumbers || searchTerm.length >= 3) {
+                    versionRegex = new RegExp(escaped, 'i');
+                }
+                
                 if (searchTerm.length <= 2) {
-                    // 1-2 characters: must match from start of module name (case-insensitive)
-                    searchRegex = new RegExp('^' + escaped, 'i');
+                    // 1-2 characters: must match from start of module name
+                    nameRegex = new RegExp('^' + escaped, 'i');
                 } else {
-                    // 3+ characters: use word boundary for letters, anywhere for numbers
+                    // 3+ characters: search module name with word boundary
                     if (hasNumbers) {
-                        // Contains numbers - match anywhere
-                        searchRegex = new RegExp(escaped, 'i');
+                        // Contains numbers - match anywhere in name
+                        nameRegex = new RegExp(escaped, 'i');
                     } else {
-                        // Letters only - match from word boundary (start of name or after separator)
-                        searchRegex = new RegExp('(^|[\\/\\-])' + escaped, 'i');
+                        // Letters only - match from word boundary
+                        nameRegex = new RegExp('(^|[\\/\\-])' + escaped, 'i');
                     }
                 }
             }
@@ -242,21 +248,27 @@
                 
                 // Search filter
                 let searchMatch = true;
-                if (searchRegex) {
-                    if (searchTerm.length <= 2) {
-                        // For 1-2 characters: match against module name only (first cell)
-                        const nameCell = row.querySelector('td:first-child');
-                        if (nameCell) {
-                            const moduleName = nameCell.textContent.trim().toLowerCase();
-                            searchMatch = searchRegex.test(moduleName);
-                        } else {
-                            searchMatch = false;
-                        }
-                    } else {
-                        // For 3+ characters: match against entire row content
-                        const text = row.textContent.toLowerCase();
-                        searchMatch = searchRegex.test(text);
+                if (nameRegex || versionRegex) {
+                    const nameCell = row.querySelector('td:first-child');
+                    const versionsCell = row.querySelector('td:last-child');
+                    
+                    let nameMatch = false;
+                    let versionMatch = false;
+                    
+                    // Check module name
+                    if (nameRegex && nameCell) {
+                        const moduleName = nameCell.textContent.trim().toLowerCase();
+                        nameMatch = nameRegex.test(moduleName);
                     }
+                    
+                    // Check versions (if search contains numbers or is 3+ characters)
+                    if (versionRegex && versionsCell) {
+                        const versionsText = versionsCell.textContent.toLowerCase();
+                        versionMatch = versionRegex.test(versionsText);
+                    }
+                    
+                    // Match if either name or version matches
+                    searchMatch = nameMatch || versionMatch;
                 }
                 
                 // Show row if both filters match
