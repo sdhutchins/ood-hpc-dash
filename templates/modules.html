@@ -141,7 +141,12 @@ document.addEventListener('DOMContentLoaded', function() {
         
         tbody.innerHTML = '';
         
-        modules.forEach(module => {
+        // Ensure modules are sorted alphabetically by name (case-insensitive)
+        const sortedModules = [...modules].sort((a, b) => {
+            return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+        });
+        
+        sortedModules.forEach(module => {
             const row = document.createElement('tr');
             row.className = 'module-row';
             row.setAttribute('data-category', module.category || 'Misc');
@@ -178,19 +183,24 @@ document.addEventListener('DOMContentLoaded', function() {
         const selectedCategory = categoryFilter ? categoryFilter.value : '';
         const rows = document.querySelectorAll('.module-row');
         
-        // Check if search term contains numbers
-        const hasNumbers = /\d/.test(searchTerm);
-        
-        // Create regex: if letters only, match from word start; if numbers, match anywhere
+        // Create regex based on search term length and content
         let searchRegex = null;
         if (searchTerm) {
-            if (hasNumbers) {
-                // Contains numbers - match anywhere
-                searchRegex = new RegExp(searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+            const escaped = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const hasNumbers = /\d/.test(searchTerm);
+            
+            if (searchTerm.length <= 2) {
+                // 1-2 characters: must match from start of module name (case-insensitive)
+                searchRegex = new RegExp('^' + escaped, 'i');
             } else {
-                // Letters only - match from word boundary (start of name or after separator)
-                const escaped = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                searchRegex = new RegExp('(^|[\\/\\-])' + escaped, 'i');
+                // 3+ characters: use word boundary for letters, anywhere for numbers
+                if (hasNumbers) {
+                    // Contains numbers - match anywhere
+                    searchRegex = new RegExp(escaped, 'i');
+                } else {
+                    // Letters only - match from word boundary (start of name or after separator)
+                    searchRegex = new RegExp('(^|[\\/\\-])' + escaped, 'i');
+                }
             }
         }
         

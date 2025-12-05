@@ -162,21 +162,8 @@ def _group_modules_by_name(module_lines):
             'category': category
         })
     
-    # Get unique categories and sort them alphabetically (Misc goes last)
-    unique_categories = sorted(set(m['category'] for m in result))
-    if 'Misc' in unique_categories:
-        unique_categories.remove('Misc')
-        unique_categories.append('Misc')
-    
-    category_index = {cat: idx for idx, cat in enumerate(unique_categories)}
-    
-    def sort_key(module):
-        cat = module['category']
-        cat_idx = category_index.get(cat, 999)  # Unknown categories go last
-        # Sort module names alphabetically within each category
-        return (cat_idx, module['name'].lower())
-    
-    result.sort(key=sort_key)
+    # Sort all modules alphabetically by name (case-insensitive)
+    result.sort(key=lambda m: m['name'].lower())
     
     return result
 
