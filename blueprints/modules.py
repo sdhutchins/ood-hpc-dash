@@ -23,27 +23,37 @@ _cached_spider = None
 _cached_modules = None
 _cached_unique_count = 0
 _cache_timestamp = 0
+_spider_initializing = False  # Flag to prevent multiple simultaneous initializations
 CACHE_TTL = 300  # Cache for 5 minutes (300 seconds)
 
 def _get_spider_instance():
     """Get or create cached Spider instance."""
-    global _cached_spider
+    global _cached_spider, _spider_initializing
     
-    if _cached_spider is None:
-        logger.info("Creating new Spider instance (will be cached)")
-        logger.warning("Spider initialization may take 30-60 seconds on large HPC systems...")
-        start_time = time.time()
-        try:
-            _cached_spider = Spider()
-            elapsed = time.time() - start_time
-            logger.info(f"Spider instance created and cached in {elapsed:.2f} seconds")
-        except Exception as e:
-            logger.error(f"Failed to create Spider instance: {e}", exc_info=True)
-            raise
-    else:
+    if _cached_spider is not None:
         logger.info("Reusing cached Spider instance")
+        return _cached_spider
     
-    return _cached_spider
+    # Check if another request is already initializing
+    if _spider_initializing:
+        logger.info("Spider is already being initialized by another request, returning None")
+        return None
+    
+    # Start initialization
+    _spider_initializing = True
+    logger.info("Creating new Spider instance (will be cached)")
+    logger.warning("Spider initialization may take 30-60 seconds on large HPC systems...")
+    start_time = time.time()
+    try:
+        _cached_spider = Spider()
+        elapsed = time.time() - start_time
+        logger.info(f"Spider instance created and cached in {elapsed:.2f} seconds")
+        _spider_initializing = False
+        return _cached_spider
+    except Exception as e:
+        _spider_initializing = False
+        logger.error(f"Failed to create Spider instance: {e}", exc_info=True)
+        raise
 
 def get_available_modules(spider=None) -> List[Dict[str, str]]:
     """
@@ -189,6 +199,16 @@ def modules_list():
     try:
         # Get cached or create new Spider instance (this may take 30-60 seconds)
         spider = _get_spider_instance()
+        
+        # If Spider is being initialized by another request, return "still initializing" message
+        if spider is None:
+            logger.info("Spider is being initialized by another request, returning wait message")
+            return jsonify({
+                'modules': [],
+                'unique_count': 0,
+                'loading': True,
+                'message': 'Module system is being initialized by another request. Please wait and the page will automatically retry.'
+            })
         
         logger.info("Getting unique module names")
         unique_names = spider.get_names()

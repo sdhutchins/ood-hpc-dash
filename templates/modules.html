@@ -26,7 +26,7 @@
 
 {% if not modules or modules|length == 0 %}
 <div class="alert alert-info alert-dismissible fade show" role="alert" id="initialCacheMessage">
-    <strong>Initializing module system:</strong> This is the first load and may take 30-60 seconds while the module cache is being built. Please be patient.
+    <strong>Initializing module system:</strong> This is the first load and may take 30-120 seconds while the module cache is being built. You can navigate away and return later - initialization continues in the background.
     <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
 </div>
 {% endif %}
@@ -37,7 +37,8 @@
             <div class="spinner-border text-primary" role="status">
                 <span class="visually-hidden">Loading...</span>
             </div>
-            <p class="mt-3 text-muted">Loading modules... Initializing module system. This may take 30-120 seconds. Please wait - do not refresh.</p>
+            <p class="mt-3 text-muted">Loading modules... Initializing module system. This may take 30-120 seconds.</p>
+            <p class="text-muted small">You can navigate away and return later - initialization continues in the background.</p>
         </div>
         <div id="warningMessage" class="alert alert-warning d-none" role="alert">
             <strong>Initializing:</strong> <span id="warningText">Server is initializing module system.</span>
@@ -122,7 +123,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const elapsed = pollStartTime ? Math.floor((Date.now() - pollStartTime) / 1000) : 0;
             const loadingText = document.querySelector('#loadingIndicator p');
             if (loadingText) {
-                loadingText.textContent = `Loading modules... Initializing module system (${elapsed}s elapsed, checking every 10 seconds, timeout in ${Math.max(0, 120 - elapsed)}s). Please wait - do not refresh.`;
+                loadingText.textContent = `Loading modules... Initializing module system (${elapsed}s elapsed, checking every 10 seconds, timeout in ${Math.max(0, 120 - elapsed)}s). You can navigate away and return later.`;
             }
             
             const response = await fetch('{{ url_for("modules.modules_list") }}');
