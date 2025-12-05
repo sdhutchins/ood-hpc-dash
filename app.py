@@ -59,8 +59,9 @@ def update_modules_background():
     if update_script.exists():
         try:
             logger.info("Updating modules list in background...")
+            # Use bash -l to run as login shell (sources .bashrc, etc.)
             result = subprocess.run(
-                ['bash', str(update_script)],
+                ['bash', '-l', str(update_script)],
                 capture_output=True,
                 text=True,
                 timeout=120
