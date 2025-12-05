@@ -2,6 +2,7 @@ from flask import Blueprint, render_template, jsonify
 from pathlib import Path
 
 import logging
+import time
 from typing import List, Dict
 
 try:
@@ -16,6 +17,33 @@ modules_bp = Blueprint('modules', __name__, url_prefix='/modules')
 
 # Logger for the modules blueprint
 logger = logging.getLogger(__name__)
+
+# Cache for Spider instance and results
+_cached_spider = None
+_cached_modules = None
+_cached_unique_count = 0
+_cache_timestamp = 0
+CACHE_TTL = 300  # Cache for 5 minutes (300 seconds)
+
+def _get_spider_instance():
+    """Get or create cached Spider instance."""
+    global _cached_spider
+    
+    if _cached_spider is None:
+        logger.info("Creating new Spider instance (will be cached)")
+        logger.warning("Spider initialization may take 30-60 seconds on large HPC systems...")
+        start_time = time.time()
+        try:
+            _cached_spider = Spider()
+            elapsed = time.time() - start_time
+            logger.info(f"Spider instance created and cached in {elapsed:.2f} seconds")
+        except Exception as e:
+            logger.error(f"Failed to create Spider instance: {e}", exc_info=True)
+            raise
+    else:
+        logger.info("Reusing cached Spider instance")
+    
+    return _cached_spider
 
 def get_available_modules(spider=None) -> List[Dict[str, str]]:
     """
@@ -98,25 +126,30 @@ def get_available_modules(spider=None) -> List[Dict[str, str]]:
 @modules_bp.route('/')
 def modules():
     """Render the modules page"""
+    global _cached_modules, _cached_unique_count, _cache_timestamp
+    
     logger.info("Modules page route accessed")
     
     if not LMODULE_AVAILABLE:
         logger.error("lmodule package not available")
         return render_template('modules.html', modules=[], unique_count=0)
     
-    # Create Spider once and reuse it
-    spider = None
+    # Check if cache is still valid
+    current_time = time.time()
+    cache_age = current_time - _cache_timestamp
+    
+    if _cached_modules is not None and cache_age < CACHE_TTL:
+        logger.info(f"Using cached modules data (age: {cache_age:.1f}s)")
+        return render_template('modules.html', modules=_cached_modules, unique_count=_cached_unique_count)
+    
+    # Cache expired or doesn't exist, refresh it
+    logger.info("Cache expired or missing, refreshing modules data")
     unique_count = 0
     modules_list = []
     
     try:
-        logger.info("Creating Spider instance (will be reused)")
-        try:
-            spider = Spider()
-            logger.info("Spider instance created successfully")
-        except Exception as spider_error:
-            logger.error(f"Failed to create Spider instance: {spider_error}", exc_info=True)
-            raise
+        # Get cached or create new Spider instance
+        spider = _get_spider_instance()
         
         logger.info("Getting unique module names")
         try:
@@ -128,17 +161,27 @@ def modules():
             logger.error(f"Error calling get_names(): {names_error}", exc_info=True)
             raise
         
-        # Reuse the same spider instance
-        logger.info("Calling get_available_modules() with existing spider")
+        # Get modules using cached spider
+        logger.info("Calling get_available_modules() with cached spider")
         try:
             modules_list = get_available_modules(spider=spider)
             logger.info(f"Retrieved {len(modules_list)} modules")
         except Exception as modules_error:
             logger.error(f"Error in get_available_modules: {modules_error}", exc_info=True)
             modules_list = []
+        
+        # Update cache
+        _cached_modules = modules_list
+        _cached_unique_count = unique_count
+        _cache_timestamp = current_time
+        logger.info(f"Cache updated with {len(modules_list)} modules")
             
     except Exception as e:
         logger.error(f"Error in modules route: {e}", exc_info=True)
+        # Return cached data if available, even if expired
+        if _cached_modules is not None:
+            logger.warning("Returning stale cached data due to error")
+            return render_template('modules.html', modules=_cached_modules, unique_count=_cached_unique_count)
         unique_count = 0
         modules_list = []
     
