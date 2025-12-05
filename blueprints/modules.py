@@ -18,7 +18,7 @@ def modules():
     try:
         logger.info("Running 'module -t spider' command...")
         result = subprocess.run(
-            ['module', '-t', 'spider'],
+            ['bash', '-lc', 'module -t spider'],
             capture_output=True,
             text=True,
             timeout=60
