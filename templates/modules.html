@@ -292,12 +292,26 @@ document.addEventListener('DOMContentLoaded', function() {
             const rows = document.querySelectorAll('.module-row');
             const accordionItems = document.querySelectorAll('.accordion-item');
             
+            // Check if search term contains numbers
+            const hasNumbers = /\d/.test(searchTerm);
+            
+            // Create regex: if letters only, match from word start; if numbers, match anywhere
+            let searchRegex;
+            if (hasNumbers) {
+                // Contains numbers - match anywhere
+                searchRegex = new RegExp(searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+            } else {
+                // Letters only - match from word boundary (start of name or after separator)
+                const escaped = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                searchRegex = new RegExp('(^|[\\/\\-])' + escaped, 'i');
+            }
+            
             let visibleCount = 0;
             let visibleCategories = new Set();
             
             rows.forEach(row => {
                 const text = row.textContent.toLowerCase();
-                if (text.includes(searchTerm)) {
+                if (searchRegex.test(text)) {
                     row.style.display = '';
                     visibleCount++;
                     // Find which category this row belongs to
