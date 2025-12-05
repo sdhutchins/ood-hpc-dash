@@ -40,9 +40,6 @@
             <p class="mt-3 text-muted">Loading modules... Initializing module system. This may take ~20 seconds.</p>
             <p class="text-muted small">You can navigate away and return later - initialization continues in the background.</p>
         </div>
-        <div id="warningMessage" class="alert alert-warning d-none" role="alert">
-            <strong>Initializing:</strong> <span id="warningText">Server is initializing module system.</span>
-        </div>
         <div id="errorMessage" class="alert alert-danger d-none" role="alert">
             <strong>Error:</strong> <span id="errorText">Failed to load modules.</span>
         </div>
@@ -82,60 +79,48 @@ document.addEventListener('DOMContentLoaded', function() {
     const uniqueCount = document.getElementById('uniqueCount');
     const noResults = document.getElementById('noResults');
     const loadingIndicator = document.getElementById('loadingIndicator');
-    const warningMessage = document.getElementById('warningMessage');
     const errorMessage = document.getElementById('errorMessage');
     const tableContainer = document.getElementById('tableContainer');
     
     let allModules = [];
     const hasModules = {% if modules and modules|length > 0 %}true{% else %}false{% endif %};
-    let isRetrying = false;
-    const POLL_INTERVAL = 10000; // 10 seconds
     
     // Fetch modules if page was loaded empty
     if (!hasModules) {
         fetchModules();
     }
     
-    function scheduleRetry() {
-        if (isRetrying) return;
-        isRetrying = true;
-        setTimeout(() => {
-            isRetrying = false;
-            fetchModules();
-        }, POLL_INTERVAL);
-    }
-    
     async function fetchModules() {
-        if (isRetrying) return;
-        
         try {
             loadingIndicator.classList.remove('d-none');
             errorMessage.classList.add('d-none');
-            warningMessage.classList.add('d-none');
             if (tableContainer) tableContainer.classList.add('d-none');
             
             const response = await fetch('{{ url_for("modules.modules_list") }}');
             if (!response.ok) {
-                if (response.status === 502) {
-                    scheduleRetry();
-                    return;
-                }
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
             
             const data = await response.json();
             
-            // If loading or no modules yet, keep polling
-            if (data.loading || !data.modules || data.modules.length === 0) {
-                scheduleRetry();
+            if (data.error) {
+                throw new Error(data.error);
+            }
+            
+            // If loading, poll again in 2 seconds
+            if (data.loading) {
+                setTimeout(fetchModules, 2000);
                 return;
+            }
+            
+            if (!data.modules || data.modules.length === 0) {
+                throw new Error('No modules returned');
             }
             
             // Success - we have modules
             allModules = data.modules;
             const unique = data.unique_count || 0;
             
-            isRetrying = false;
             loadingIndicator.classList.add('d-none');
             const initialCacheMsg = document.getElementById('initialCacheMessage');
             if (initialCacheMsg) initialCacheMsg.classList.add('d-none');
