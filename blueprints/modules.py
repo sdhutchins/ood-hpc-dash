@@ -79,9 +79,11 @@ def _categorize_module(module_name, categories_config):
             return categories_config['rc']
         return 'Research Computing modules'
     
-    # Special handling for lowercase cuda* modules (not uppercase CUDA)
-    # Group all cuda10.0/*, cuda11.2/*, etc. under "Compilers/Toolchains"
-    if module_name.startswith('cuda') and not module_name.startswith('CUDA'):
+    # Special handling for cuda* modules (case-insensitive, but not all-caps CUDA)
+    # Group all cuda10.0/*, cuda11.2/*, Cuda*, etc. under "Compilers/Toolchains"
+    # Note: All-caps CUDA is handled by exact match above
+    module_lower = module_name.lower()
+    if module_lower.startswith('cuda') and module_name != 'CUDA':
         if 'cuda' in categories_config:
             return categories_config['cuda']
         return 'Compilers/Toolchains'
