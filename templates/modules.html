@@ -26,7 +26,7 @@
 
 {% if not modules or modules|length == 0 %}
 <div class="alert alert-info alert-dismissible fade show" role="alert" id="initialCacheMessage">
-    <strong>Initializing module system:</strong> This is the first load and may take 30-120 seconds while the module cache is being built. You can navigate away and return later - initialization continues in the background.
+    <strong>Initializing module system:</strong> This is the first load and may take ~20 seconds while the module cache is being built. You can navigate away and return later - initialization continues in the background.
     <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
 </div>
 {% endif %}
@@ -37,7 +37,7 @@
             <div class="spinner-border text-primary" role="status">
                 <span class="visually-hidden">Loading...</span>
             </div>
-            <p class="mt-3 text-muted">Loading modules... Initializing module system. This may take 30-120 seconds.</p>
+            <p class="mt-3 text-muted">Loading modules... Initializing module system. This may take ~20 seconds.</p>
             <p class="text-muted small">You can navigate away and return later - initialization continues in the background.</p>
         </div>
         <div id="warningMessage" class="alert alert-warning d-none" role="alert">
@@ -96,106 +96,60 @@ document.addEventListener('DOMContentLoaded', function() {
         fetchModules();
     }
     
+    function scheduleRetry() {
+        if (isRetrying) return;
+        isRetrying = true;
+        setTimeout(() => {
+            isRetrying = false;
+            fetchModules();
+        }, POLL_INTERVAL);
+    }
+    
     async function fetchModules() {
-        // Prevent multiple simultaneous retries
-        if (isRetrying) {
-            return;
-        }
+        if (isRetrying) return;
+        
         try {
-            // Always show loading indicator during polling
             loadingIndicator.classList.remove('d-none');
             errorMessage.classList.add('d-none');
             warningMessage.classList.add('d-none');
             if (tableContainer) tableContainer.classList.add('d-none');
             
-            // Update loading message with elapsed time
-            const loadingText = document.querySelector('#loadingIndicator p');
-            if (loadingText) {
-                const match = loadingText.textContent.match(/(\d+)s elapsed/);
-                const elapsed = match ? parseInt(match[1]) + 10 : 10;
-                loadingText.textContent = `Loading modules... Initializing module system (${elapsed}s elapsed, checking every 10 seconds). You can navigate away and return later.`;
-            }
-            
             const response = await fetch('{{ url_for("modules.modules_list") }}');
             if (!response.ok) {
                 if (response.status === 502) {
-                    // Keep loading indicator, retry in 10 seconds
-                    isRetrying = true;
-                    setTimeout(() => {
-                        isRetrying = false;
-                        fetchModules();
-                    }, POLL_INTERVAL);
+                    scheduleRetry();
                     return;
                 }
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
+            
             const data = await response.json();
             
-            if (data.error) {
-                // Check if it's an initialization message - keep polling
-                if (data.error.includes('initializing') || data.error.includes('Initializing')) {
-                    isRetrying = true;
-                    setTimeout(() => {
-                        isRetrying = false;
-                        fetchModules();
-                    }, POLL_INTERVAL);
-                    return;
-                }
-                throw new Error(data.error);
-            }
-            
-            // Check for loading/stale data message - keep polling
-            if (data.loading || (data.stale && (!data.modules || data.modules.length === 0))) {
-                isRetrying = true;
-                setTimeout(() => {
-                    isRetrying = false;
-                    fetchModules();
-                }, POLL_INTERVAL);
+            // If loading or no modules yet, keep polling
+            if (data.loading || !data.modules || data.modules.length === 0) {
+                scheduleRetry();
                 return;
             }
             
-            // Check if we actually got modules
-            if (!data.modules || data.modules.length === 0) {
-                // No modules yet, keep polling
-                isRetrying = true;
-                setTimeout(() => {
-                    isRetrying = false;
-                    fetchModules();
-                }, POLL_INTERVAL);
-                return;
-            }
-            
-            allModules = data.modules || [];
+            // Success - we have modules
+            allModules = data.modules;
             const unique = data.unique_count || 0;
             
-            // Success! Reset everything
             isRetrying = false;
             loadingIndicator.classList.add('d-none');
-            // Hide initial cache message if it exists
             const initialCacheMsg = document.getElementById('initialCacheMessage');
-            if (initialCacheMsg) {
-                initialCacheMsg.classList.add('d-none');
-            }
-            if (tableContainer) {
-                tableContainer.classList.remove('d-none');
-            }
+            if (initialCacheMsg) initialCacheMsg.classList.add('d-none');
+            if (tableContainer) tableContainer.classList.remove('d-none');
+            
             displayModules(allModules);
             uniqueCount.textContent = unique;
             moduleCount.textContent = allModules.length;
+            
         } catch (error) {
             console.error('Error fetching modules:', error);
             loadingIndicator.classList.add('d-none');
-            // Check if it's an initialization warning - keep polling
-            if (error.message.includes('initializing') || error.message.includes('Initializing')) {
-                isRetrying = true;
-                setTimeout(() => {
-                    isRetrying = false;
-                    fetchModules();
-                }, POLL_INTERVAL);
-            } else {
-                errorMessage.classList.remove('d-none');
-                document.getElementById('errorText').textContent = error.message;
-            }
+            errorMessage.classList.remove('d-none');
+            document.getElementById('errorText').textContent = error.message;
         }
     }
     
