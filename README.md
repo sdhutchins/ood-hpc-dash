@@ -1,7 +1,16 @@
-# Open OnDemand Flask Template
+![Experimental](https://img.shields.io/badge/stability-experimental-blue.svg)
 
-This is a Flask template for building Open OnDemand applications. It provides a basic structure and common
-functionalities to help you get started quickly.
+# Open OnDemand HPC Dashboard
+
+This is a Flask app that serves as a dashboard on the CHEAHA HPC.
+
+So far, you can:
+- View all modules available by searching and filtering by categories
+
+Other features will include:
+- A jobs tab to monitor your current jobs and available resources
+- An HTML viewer
+- An envs tab that will list existing conda environments and tell how to activate them
 
 This was inspired by [OSC's OOD Flask example app](https://github.com/OSC/ood-example-flask-app).
 

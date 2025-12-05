@@ -5,9 +5,12 @@ import sys
 import threading
 import time
 from pathlib import Path
+import os
+
 
 # Third-party imports
 from flask import Flask, render_template
+import flaskcode
 
 # Local imports
 from blueprints.envs import envs_bp
@@ -16,6 +19,11 @@ from blueprints.modules import modules_bp
 from blueprints.viewer import viewer_bp
 
 app = Flask(__name__)
+
+# Configure FlaskCode
+app.config.from_object(flaskcode.default_config)
+app.config['FLASKCODE_RESOURCE_BASEPATH'] = os.path.expanduser('~')
+app.register_blueprint(flaskcode.blueprint, url_prefix='/flaskcode')
 
 # Create logs directory if it doesn't exist
 log_dir = Path('logs')
