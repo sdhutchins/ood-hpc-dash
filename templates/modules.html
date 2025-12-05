@@ -8,6 +8,22 @@
     </div>
 </div>
 
+<div class="row mb-3">
+    <div class="col-md-6">
+        <input 
+            type="text" 
+            id="moduleSearch" 
+            placeholder="Search modules..." 
+            class="form-control"
+        >
+    </div>
+    <div class="col-md-6 d-flex align-items-center">
+        <small class="text-muted">
+            <strong id="uniqueCount">{{ unique_count or 0 }}</strong> unique software packages
+        </small>
+    </div>
+</div>
+
 <div class="row">
     <div class="col">
         <div id="loadingCard" class="card {% if modules and modules|length > 0 %}d-none{% endif %}">
@@ -20,9 +36,34 @@
         </div>
         <div id="modulesCard" class="card {% if not modules or modules|length == 0 %}d-none{% endif %}">
             <div class="card-body">
-                <p class="text-muted mb-3"><strong id="moduleCount">{{ modules|length if modules else 0 }}</strong> module lines</p>
-                <pre class="bg-light p-3" style="max-height: 600px; overflow-y: auto;"><code id="modulesContent">{% if modules %}{% for module in modules %}{{ module }}
-{% endfor %}{% endif %}</code></pre>
+                <div class="table-responsive">
+                    <table class="table table-hover table-sm">
+                        <thead class="table-light">
+                            <tr>
+                                <th scope="col">Name</th>
+                                <th scope="col">Versions Available</th>
+                            </tr>
+                        </thead>
+                        <tbody id="modulesTableBody">
+                            {% if modules %}
+                            {% for module in modules %}
+                            <tr class="module-row">
+                                <td><code>{{ module.name }}</code></td>
+                                <td>
+                                    {% if module.versions %}
+                                        {% for version in module.versions %}
+                                            <code>{{ version }}</code>{% if not loop.last %}, {% endif %}
+                                        {% endfor %}
+                                    {% else %}
+                                        <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </div>
@@ -30,6 +71,9 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    const searchInput = document.getElementById('moduleSearch');
+    let allModules = {% if modules %}{{ modules|tojson|safe }}{% else %}[]{% endif %};
+    
     {% if not modules or modules|length == 0 %}
     // Poll for modules if page loaded empty
     function fetchModules() {
@@ -37,14 +81,13 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(response => response.json())
             .then(data => {
                 if (data.loading) {
-                    // Still loading, check again in 2 seconds
                     setTimeout(fetchModules, 2000);
                 } else if (data.modules && data.modules.length > 0) {
-                    // Modules loaded!
+                    allModules = data.modules;
                     document.getElementById('loadingCard').classList.add('d-none');
                     document.getElementById('modulesCard').classList.remove('d-none');
-                    document.getElementById('moduleCount').textContent = data.modules.length;
-                    document.getElementById('modulesContent').textContent = data.modules.join('\n');
+                    document.getElementById('uniqueCount').textContent = data.unique_count || data.modules.length;
+                    displayModules(data.modules);
                 }
             })
             .catch(error => {
@@ -55,6 +98,57 @@ document.addEventListener('DOMContentLoaded', function() {
     
     fetchModules();
     {% endif %}
+    
+    function displayModules(modules) {
+        const tbody = document.getElementById('modulesTableBody');
+        tbody.innerHTML = '';
+        
+        modules.forEach(module => {
+            const row = document.createElement('tr');
+            row.className = 'module-row';
+            
+            const nameCell = document.createElement('td');
+            nameCell.innerHTML = '<code>' + escapeHtml(module.name) + '</code>';
+            
+            const versionsCell = document.createElement('td');
+            if (module.versions && module.versions.length > 0) {
+                versionsCell.innerHTML = module.versions.map(v => 
+                    '<code>' + escapeHtml(v) + '</code>'
+                ).join(', ');
+            } else {
+                versionsCell.innerHTML = '<span class="text-muted">-</span>';
+            }
+            
+            row.appendChild(nameCell);
+            row.appendChild(versionsCell);
+            tbody.appendChild(row);
+        });
+    }
+    
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    
+    // Search functionality
+    if (searchInput) {
+        searchInput.addEventListener('input', function() {
+            const searchTerm = this.value.toLowerCase().trim();
+            const rows = document.querySelectorAll('.module-row');
+            let visibleCount = 0;
+            
+            rows.forEach(row => {
+                const text = row.textContent.toLowerCase();
+                if (text.includes(searchTerm)) {
+                    row.style.display = '';
+                    visibleCount++;
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+        });
+    }
 });
 </script>
 {% endblock %}
