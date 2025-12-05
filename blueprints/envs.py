@@ -95,12 +95,12 @@ def _group_envs(envs: list[dict]) -> tuple[dict, list[str]]:
 
 # Category display metadata
 CATEGORY_META = {
-    "Project": {"title": "Project Conda Environments", "icon": "fa-folder-tree"},
-    "Home": {"title": "Home Conda Environments", "icon": "fa-house"},
-    "Conda": {"title": "Conda Environments", "icon": "fa-flask"},
-    "Mamba": {"title": "Mamba Environments", "icon": "fa-snake"},
-    "Scratch": {"title": "Scratch Environments", "icon": "fa-database"},
-    "Other": {"title": "Other Environments", "icon": "fa-box"},
+    "Project": {"title": "Project Conda Environments", "icon": "fa-folder"},
+    "Home": {"title": "Home Conda Environments", "icon": "fa-folder"},
+    "Conda": {"title": "Conda Environments", "icon": "fa-folder"},
+    "Mamba": {"title": "Mamba Environments", "icon": "fa-folder"},
+    "Scratch": {"title": "Scratch Environments", "icon": "fa-folder"},
+    "Other": {"title": "Other Environments", "icon": "fa-folder"},
 }
 
 @envs_bp.route('/')
