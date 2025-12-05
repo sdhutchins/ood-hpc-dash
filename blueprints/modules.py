@@ -1,6 +1,7 @@
 # Standard library imports
 import json
 import logging
+import re
 from pathlib import Path
 
 # Third-party imports
@@ -42,6 +43,17 @@ def _load_categories():
     except Exception as e:
         logger.error(f"Error loading categories: {e}", exc_info=True)
         return None
+
+def _natural_sort_key(text):
+    """Generate a sort key for natural (numeric-aware) sorting.
+    
+    Splits text into alternating text and number parts for proper version sorting.
+    Example: "Armadillo/11.4.3" -> ('Armadillo/', 11, '.', 4, '.', 3)
+    """
+    def convert(text_part):
+        return int(text_part) if text_part.isdigit() else text_part.lower()
+    
+    return [convert(part) for part in re.split(r'(\d+)', text)]
 
 def _categorize_module(module_name, categories_config):
     """Assign a category to a module based on configuration.
@@ -138,17 +150,19 @@ def _group_modules_by_name(module_lines):
             if module_line not in grouped:
                 grouped[module_line] = []
     
-    # Convert to list of dicts with categories, sorted by category then name
+    # Convert to list of dicts with categories
     result = []
-    for name, versions in sorted(grouped.items()):
+    for name, versions in grouped.items():
         category = _categorize_module(name, categories_config)
+        # Sort versions using natural (numeric-aware) sorting
+        sorted_versions = sorted(versions, key=_natural_sort_key) if versions else []
         result.append({
             'name': name,
-            'versions': sorted(versions) if versions else [],
+            'versions': sorted_versions,
             'category': category
         })
     
-    # Get unique categories and sort them (Misc goes last)
+    # Get unique categories and sort them alphabetically (Misc goes last)
     unique_categories = sorted(set(m['category'] for m in result))
     if 'Misc' in unique_categories:
         unique_categories.remove('Misc')
@@ -159,7 +173,8 @@ def _group_modules_by_name(module_lines):
     def sort_key(module):
         cat = module['category']
         cat_idx = category_index.get(cat, 999)  # Unknown categories go last
-        return (cat_idx, module['name'])
+        # Sort module names alphabetically within each category
+        return (cat_idx, module['name'].lower())
     
     result.sort(key=sort_key)
     
