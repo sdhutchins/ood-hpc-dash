@@ -17,8 +17,12 @@ def modules():
     """Render the modules page."""
     try:
         logger.info("Running 'module -t spider' command...")
+        # Source lmod init script and run module command
+        cmd = 'source /usr/share/lmod/lmod/init/bash && module -t spider'
         result = subprocess.run(
-            ['bash', '-lc', 'module -t spider'],
+            cmd,
+            shell=True,
+            executable='/bin/bash',
             capture_output=True,
             text=True,
             timeout=60
