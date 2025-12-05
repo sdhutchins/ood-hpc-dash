@@ -64,12 +64,28 @@ def update_modules_background():
                 ['bash', '-l', str(update_script)],
                 capture_output=True,
                 text=True,
-                timeout=120
+                timeout=120,
+                cwd=Path.cwd()  # Ensure we're in the right directory
             )
             if result.returncode == 0:
-                logger.info("Modules list updated successfully")
+                # Check if file was actually created and has content
+                if modules_file.exists():
+                    file_size = modules_file.stat().st_size
+                    logger.info(f"Modules list updated successfully (file size: {file_size} bytes)")
+                    if file_size == 0:
+                        logger.warning("Modules file is empty - checking script output")
+                        if result.stdout:
+                            logger.warning(f"Script stdout: {result.stdout}")
+                        if result.stderr:
+                            logger.warning(f"Script stderr: {result.stderr}")
+                else:
+                    logger.warning("Modules file was not created")
             else:
-                logger.warning(f"Modules update had issues: {result.stderr}")
+                logger.warning(f"Modules update failed (exit code {result.returncode})")
+                if result.stderr:
+                    logger.warning(f"Script stderr: {result.stderr}")
+                if result.stdout:
+                    logger.warning(f"Script stdout: {result.stdout}")
         except Exception as e:
             logger.warning(f"Could not update modules: {e}")
 
