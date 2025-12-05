@@ -12,8 +12,6 @@ Other features will include:
 - An HTML viewer
 - An envs tab that will list existing conda environments and tell how to activate them
 
-This was inspired by [OSC's OOD Flask example app](https://github.com/OSC/ood-example-flask-app).
-
 ## Installation
 
 Create the app directory, clone the repository, and run setup:
