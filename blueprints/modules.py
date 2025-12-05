@@ -1,6 +1,7 @@
 # Standard library imports
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -26,15 +27,14 @@ _cached_spider = None
 _cached_modules = None
 _cached_unique_count = 0
 _cache_timestamp = 0
-CACHE_TTL = 300  # Cache for 5 minutes (300 seconds)
 CACHE_FILE = Path('logs/modules_cache.json')
 LOCK_FILE = Path('logs/spider_initializing.lock')  # Source of truth for initialization status
 
 def _load_cache_from_file() -> Optional[Dict]:
-    """Load cache from file if it exists and is valid.
+    """Load cache from file if it exists.
     
     Returns:
-        Dictionary with 'modules', 'unique_count', and 'timestamp' if valid,
+        Dictionary with 'modules', 'unique_count', and 'timestamp' if exists,
         None otherwise.
     """
     try:
@@ -44,15 +44,7 @@ def _load_cache_from_file() -> Optional[Dict]:
         with CACHE_FILE.open('r', encoding='utf-8') as f:
             cache_data = json.load(f)
         
-        cache_time = cache_data.get('timestamp', 0)
-        current_time = time.time()
-        cache_age = current_time - cache_time
-        
-        if cache_age < CACHE_TTL:
-            return cache_data
-        
-        logger.info(f"Cache expired (age: {int(cache_age)}s), will refresh")
-        return None
+        return cache_data
         
     except (json.JSONDecodeError, OSError) as e:
         logger.error(f"Error loading cache from file: {e}", exc_info=True)
@@ -87,8 +79,8 @@ def _is_initializing() -> bool:
     
     lock_age = time.time() - LOCK_FILE.stat().st_mtime
     
-    # Remove stale lock (>30s with no cache, or >5min regardless)
-    if (lock_age > 30 and not CACHE_FILE.exists()) or lock_age > 300:
+    # Remove stale lock if older than 5 minutes
+    if lock_age > 300:
         try:
             LOCK_FILE.unlink()
         except OSError:
@@ -207,39 +199,40 @@ def modules_list():
             'loading': True
         })
     
-    # No cache and not initializing - start initialization
+    # No cache and not initializing - start initialization in background
     logger.info("Starting Spider initialization")
     _set_initializing()
     
-    try:
-        spider = Spider()
-        _cached_spider = spider
-        
-        unique_names = spider.get_names()
-        unique_count = len(unique_names)
-        modules_list = get_available_modules(spider=spider)
-        
-        _cached_modules = modules_list
-        _cached_unique_count = unique_count
-        _cache_timestamp = time.time()
-        _save_cache_to_file(modules_list, unique_count)
-        
-        logger.info(f"Initialization complete: {unique_count} unique, {len(modules_list)} total modules")
-        
-        return jsonify({
-            'modules': modules_list,
-            'unique_count': unique_count
-        })
+    def initialize_background():
+        global _cached_spider, _cached_modules, _cached_unique_count, _cache_timestamp
+        try:
+            spider = Spider()
+            _cached_spider = spider
             
-    except Exception as e:
-        logger.error(f"Error initializing modules: {e}", exc_info=True)
-        if LOCK_FILE.exists():
-            try:
-                LOCK_FILE.unlink()
-            except OSError:
-                pass
-        return jsonify({
-            'modules': [],
-            'unique_count': 0,
-            'error': str(e)
-        })
+            unique_names = spider.get_names()
+            unique_count = len(unique_names)
+            modules_list = get_available_modules(spider=spider)
+            
+            _cached_modules = modules_list
+            _cached_unique_count = unique_count
+            _cache_timestamp = time.time()
+            _save_cache_to_file(modules_list, unique_count)
+            
+            logger.info(f"Initialization complete: {unique_count} unique, {len(modules_list)} total modules")
+        except Exception as e:
+            logger.error(f"Error initializing modules: {e}", exc_info=True)
+            if LOCK_FILE.exists():
+                try:
+                    LOCK_FILE.unlink()
+                except OSError:
+                    pass
+    
+    thread = threading.Thread(target=initialize_background, daemon=True)
+    thread.start()
+    
+    # Return immediately - JavaScript will poll until cache is ready
+    return jsonify({
+        'modules': [],
+        'unique_count': 0,
+        'loading': True
+    })
