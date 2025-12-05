@@ -4,25 +4,34 @@
 {% if warning %}
 <div class="alert alert-warning">{{ warning }}</div>
 {% endif %}
+
 {% if envs_by_category %}
   {% for cat in category_order %}
     {% if envs_by_category[cat] %}
-    <div class="card mb-3">
-      <div class="card-header fw-semibold">{{ cat }}</div>
-      <div class="card-body p-0">
-        <table class="table table-sm table-hover mb-0">
-          <thead class="table-light">
-            <tr><th style="width: 25%;">Name</th><th>Path</th></tr>
-          </thead>
-          <tbody>
-          {% for env in envs_by_category[cat] %}
-            <tr>
-              <td>{{ env.name }}</td>
-              <td><code>{{ env.path }}</code></td>
-            </tr>
-          {% endfor %}
-          </tbody>
-        </table>
+    {% set meta = category_meta.get(cat, {}) %}
+    <div class="card mb-4 shadow-sm">
+      <div class="card-body">
+        <h4 class="card-title mb-3">
+          {% if meta.icon %}
+            <i class="fa-solid {{ meta.icon }} me-2"></i>
+          {% endif %}
+          {{ meta.title or cat }}
+        </h4>
+        <div class="table-responsive">
+          <table class="table table-striped table-hover table-sm align-middle mb-0">
+            <thead class="table-light">
+              <tr><th style="width: 200px;">Name</th><th>Path</th></tr>
+            </thead>
+            <tbody>
+            {% for env in envs_by_category[cat] %}
+              <tr>
+                <td>{{ env.name }}</td>
+                <td class="text-break"><code>{{ env.path }}</code></td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
     {% endif %}

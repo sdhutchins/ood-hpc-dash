@@ -93,6 +93,16 @@ def _group_envs(envs: list[dict]) -> tuple[dict, list[str]]:
     ordered = [c for c in order if c in grouped] + [c for c in grouped if c not in order]
     return grouped, ordered
 
+# Category display metadata
+CATEGORY_META = {
+    "Project": {"title": "Project Conda Environments", "icon": "fa-folder-tree"},
+    "Home": {"title": "Home Conda Environments", "icon": "fa-house"},
+    "Conda": {"title": "Conda Environments", "icon": "fa-flask"},
+    "Mamba": {"title": "Mamba Environments", "icon": "fa-snake"},
+    "Scratch": {"title": "Scratch Environments", "icon": "fa-database"},
+    "Other": {"title": "Other Environments", "icon": "fa-box"},
+}
+
 @envs_bp.route('/')
 def envs():
     envs_list, warning = _load_envs_from_conda_list()
@@ -103,4 +113,5 @@ def envs():
         warning=warning,
         envs_by_category=envs_by_category,
         category_order=category_order,
+        category_meta=CATEGORY_META,
     )
