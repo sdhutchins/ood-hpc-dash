@@ -39,6 +39,9 @@
             </div>
             <p class="mt-3 text-muted">Loading modules... This may take 30-60 seconds on first load.</p>
         </div>
+        <div id="warningMessage" class="alert alert-warning d-none" role="alert">
+            <strong>Initializing:</strong> <span id="warningText">Server is initializing module system.</span>
+        </div>
         <div id="errorMessage" class="alert alert-danger d-none" role="alert">
             <strong>Error:</strong> <span id="errorText">Failed to load modules.</span>
         </div>
@@ -78,11 +81,13 @@ document.addEventListener('DOMContentLoaded', function() {
     const uniqueCount = document.getElementById('uniqueCount');
     const noResults = document.getElementById('noResults');
     const loadingIndicator = document.getElementById('loadingIndicator');
+    const warningMessage = document.getElementById('warningMessage');
     const errorMessage = document.getElementById('errorMessage');
     const tableContainer = document.getElementById('tableContainer');
     
     let allModules = [];
     const hasModules = {% if modules and modules|length > 0 %}true{% else %}false{% endif %};
+    let isRetrying = false;
     
     // Fetch modules if page was loaded empty
     if (!hasModules) {
@@ -90,27 +95,79 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     async function fetchModules() {
+        // Prevent multiple simultaneous retries
+        if (isRetrying) {
+            return;
+        }
         try {
             loadingIndicator.classList.remove('d-none');
             errorMessage.classList.add('d-none');
+            warningMessage.classList.add('d-none');
             if (tableContainer) tableContainer.classList.add('d-none');
             
             const response = await fetch('{{ url_for("modules.modules_list") }}');
             if (!response.ok) {
                 if (response.status === 502) {
-                    throw new Error('Server is initializing module system. This may take 30-60 seconds. Please wait and refresh the page.');
+                    // Show warning for initialization, not error
+                    loadingIndicator.classList.add('d-none');
+                    warningMessage.classList.remove('d-none');
+                    document.getElementById('warningText').textContent = 'Server is initializing module system. This may take 30-60 seconds. Please wait - the page will automatically retry. Do not refresh.';
+                    // Auto-retry after 15 seconds
+                    isRetrying = true;
+                    setTimeout(() => {
+                        isRetrying = false;
+                        warningMessage.classList.add('d-none');
+                        loadingIndicator.classList.remove('d-none');
+                        fetchModules();
+                    }, 15000);
+                    return;
                 }
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
             const data = await response.json();
             
             if (data.error) {
+                // Check if it's an initialization message
+                if (data.error.includes('initializing') || data.error.includes('Initializing')) {
+                    loadingIndicator.classList.add('d-none');
+                    warningMessage.classList.remove('d-none');
+                    document.getElementById('warningText').textContent = data.error + ' The page will automatically retry. Do not refresh.';
+                    // Auto-retry after 15 seconds
+                    isRetrying = true;
+                    setTimeout(() => {
+                        isRetrying = false;
+                        warningMessage.classList.add('d-none');
+                        loadingIndicator.classList.remove('d-none');
+                        fetchModules();
+                    }, 15000);
+                    return;
+                }
                 throw new Error(data.error);
+            }
+            
+            // Check for loading/stale data message
+            if (data.loading || data.stale) {
+                if (data.message) {
+                    loadingIndicator.classList.add('d-none');
+                    warningMessage.classList.remove('d-none');
+                    document.getElementById('warningText').textContent = data.message + ' The page will automatically retry. Do not refresh.';
+                    // Auto-retry after 15 seconds
+                    isRetrying = true;
+                    setTimeout(() => {
+                        isRetrying = false;
+                        warningMessage.classList.add('d-none');
+                        loadingIndicator.classList.remove('d-none');
+                        fetchModules();
+                    }, 15000);
+                    return;
+                }
             }
             
             allModules = data.modules || [];
             const unique = data.unique_count || 0;
             
+            // Reset retry flag on success
+            isRetrying = false;
             loadingIndicator.classList.add('d-none');
             // Hide initial cache message if it exists
             const initialCacheMsg = document.getElementById('initialCacheMessage');
@@ -126,8 +183,23 @@ document.addEventListener('DOMContentLoaded', function() {
         } catch (error) {
             console.error('Error fetching modules:', error);
             loadingIndicator.classList.add('d-none');
-            errorMessage.classList.remove('d-none');
-            document.getElementById('errorText').textContent = error.message;
+            // Check if it's an initialization warning
+            if (error.message.includes('initializing') || error.message.includes('Initializing')) {
+                loadingIndicator.classList.add('d-none');
+                warningMessage.classList.remove('d-none');
+                document.getElementById('warningText').textContent = error.message + ' The page will automatically retry. Do not refresh.';
+                // Auto-retry after 15 seconds
+                isRetrying = true;
+                setTimeout(() => {
+                    isRetrying = false;
+                    warningMessage.classList.add('d-none');
+                    loadingIndicator.classList.remove('d-none');
+                    fetchModules();
+                }, 15000);
+            } else {
+                errorMessage.classList.remove('d-none');
+                document.getElementById('errorText').textContent = error.message;
+            }
         }
     }
     
