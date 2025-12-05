@@ -77,7 +77,14 @@ def _categorize_module(module_name, categories_config):
     if module_name.startswith('rc/'):
         if 'rc' in categories_config:
             return categories_config['rc']
-        return 'Restricted Modules'
+        return 'Research Computing modules'
+    
+    # Special handling for lowercase cuda* modules (not uppercase CUDA)
+    # Group all cuda10.0/*, cuda11.2/*, etc. under "Compilers/Toolchains"
+    if module_name.startswith('cuda') and not module_name.startswith('CUDA'):
+        if 'cuda' in categories_config:
+            return categories_config['cuda']
+        return 'Compilers/Toolchains'
     
     # Default to Misc for unmatched modules
     return 'Misc'
