@@ -1,9 +1,15 @@
 from flask import Blueprint, render_template, jsonify
-from lmod.spider import Spider
 from pathlib import Path
 
 import logging
 from typing import List, Dict
+
+try:
+    from lmod.spider import Spider
+    LMODULE_AVAILABLE = True
+except ImportError:
+    LMODULE_AVAILABLE = False
+    Spider = None
 
 # Blueprint for the modules page
 modules_bp = Blueprint('modules', __name__, url_prefix='/modules')
@@ -17,6 +23,10 @@ def get_available_modules() -> List[Dict[str, str]]:
     First gets unique module names, then retrieves all modules for those names.
     Returns list of dictionaries with name, version, and location.
     """
+    if not LMODULE_AVAILABLE:
+        logger.error("lmodule package not available")
+        return []
+    
     try:
         spider = Spider()
         
@@ -60,14 +70,24 @@ def get_available_modules() -> List[Dict[str, str]]:
 @modules_bp.route('/')
 def modules():
     """Render the modules page"""
+    if not LMODULE_AVAILABLE:
+        logger.error("lmodule package not available")
+        return render_template('modules.html', modules=[], unique_count=0)
+    
     try:
         spider = Spider()
         unique_names = spider.get_names()
         unique_count = len(unique_names)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error getting unique names count: {e}")
         unique_count = 0
     
-    modules_list = get_available_modules()
+    try:
+        modules_list = get_available_modules()
+    except Exception as e:
+        logger.error(f"Error in get_available_modules: {e}")
+        modules_list = []
+    
     return render_template('modules.html', modules=modules_list, unique_count=unique_count)
 
 @modules_bp.route('/list')
