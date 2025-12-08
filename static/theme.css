@@ -1,0 +1,23 @@
+body { 
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+:root {
+  --theme-text-color: #212529;
+}
+
+.btn-primary {
+  background-color: var(--theme-bg-color) !important;
+  border-color: var(--theme-bg-color) !important;
+  color: var(--theme-text-color) !important;
+}
+
+.btn-primary:hover,
+.btn-primary:focus,
+.btn-primary:active {
+  background-color: var(--theme-bg-color) !important;
+  border-color: var(--theme-bg-color) !important;
+  color: var(--theme-text-color) !important;
+  opacity: 0.85;
+  filter: brightness(0.95);
+}
