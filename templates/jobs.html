@@ -1,6 +1,155 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h2>Jobs</h2>
-<p class="text-muted">Job monitoring functionality coming soon.</p>
+<div class="row mb-4">
+    <div class="col">
+        <h2 class="pb-2 mb-3 border-bottom">Cluster Partitions</h2>
+        <p class="text-muted">
+            Overview of available compute partitions. Partitions are sorted by availability (most available first).
+            Use this information to choose the best partition for your job submission.
+        </p>
+    </div>
+</div>
+
+{% if error %}
+<div class="alert alert-warning" role="alert">
+    <strong>Warning:</strong> {{ error }}
+</div>
+{% elif partitions %}
+    {# Summary Statistics #}
+    {% if summary %}
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card shadow-sm border-0">
+                <div class="card-body text-center">
+                    <h5 class="card-title text-muted mb-1">Total Partitions</h5>
+                    <h2 class="mb-0">{{ summary.total_partitions }}</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card shadow-sm border-0">
+                <div class="card-body text-center">
+                    <h5 class="card-title text-muted mb-1">Total Nodes</h5>
+                    <h2 class="mb-0">{{ summary.total_nodes }}</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card shadow-sm border-0">
+                <div class="card-body text-center">
+                    <h5 class="card-title text-muted mb-1">Available Nodes</h5>
+                    <h2 class="mb-0 text-success">{{ summary.available_nodes }}</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card shadow-sm border-0">
+                <div class="card-body text-center">
+                    <h5 class="card-title text-muted mb-1">Allocated Nodes</h5>
+                    <h2 class="mb-0 text-primary">{{ summary.allocated_nodes }}</h2>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {# Partitions Table #}
+    <div class="card shadow-sm mb-4">
+        <div class="card-header bg-light">
+            <h5 class="mb-0">Partition Details</h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover table-sm align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="width: 15%;">Partition</th>
+                            <th style="width: 10%;">Status</th>
+                            <th style="width: 12%;">Time Limit</th>
+                            <th style="width: 15%;">Nodes</th>
+                            <th style="width: 12%;">Availability</th>
+                            <th style="width: 36%;">Node List</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for part in partitions %}
+                        <tr {% if part.availability_pct >= 50 %}class="table-success"{% elif part.availability_pct >= 25 %}class="table-warning"{% endif %}>
+                            <td>
+                                <strong>{{ part.name }}</strong>
+                                {% if part.name[-1] == '*' %}
+                                    <span class="badge bg-info ms-1" title="Default partition">Default</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if part.avail == 'up' %}
+                                    <span class="badge bg-success">Up</span>
+                                {% else %}
+                                    <span class="badge bg-danger">Down</span>
+                                {% endif %}
+                            </td>
+                            <td><code>{{ part.timelimit }}</code></td>
+                            <td>
+                                <div class="small">
+                                    <span class="text-primary"><strong>{{ part.allocated }}</strong></span> /
+                                    <span class="text-success"><strong>{{ part.idle }}</strong></span> /
+                                    <span class="text-secondary">{{ part.other }}</span> /
+                                    <strong>{{ part.total }}</strong>
+                                    <br>
+                                    <small class="text-muted">(A/I/O/T)</small>
+                                </div>
+                            </td>
+                            <td>
+                                {% if part.availability_pct >= 75 %}
+                                    <span class="badge bg-success">{{ part.availability_pct }}%</span>
+                                {% elif part.availability_pct >= 50 %}
+                                    <span class="badge bg-info">{{ part.availability_pct }}%</span>
+                                {% elif part.availability_pct >= 25 %}
+                                    <span class="badge bg-warning text-dark">{{ part.availability_pct }}%</span>
+                                {% else %}
+                                    <span class="badge bg-danger">{{ part.availability_pct }}%</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <code class="small text-break">{{ part.nodelist }}</code>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    {# Legend #}
+    <div class="card shadow-sm">
+        <div class="card-body">
+            <h6 class="card-title">Legend</h6>
+            <div class="row">
+                <div class="col-md-6">
+                    <p class="small mb-2"><strong>Node Status:</strong></p>
+                    <ul class="small mb-0">
+                        <li><strong>A</strong> = Allocated (in use)</li>
+                        <li><strong>I</strong> = Idle (available)</li>
+                        <li><strong>O</strong> = Other (down, draining, etc.)</li>
+                        <li><strong>T</strong> = Total nodes</li>
+                    </ul>
+                </div>
+                <div class="col-md-6">
+                    <p class="small mb-2"><strong>Availability Colors:</strong></p>
+                    <ul class="small mb-0">
+                        <li><span class="badge bg-success">75%+</span> Excellent availability</li>
+                        <li><span class="badge bg-info">50-74%</span> Good availability</li>
+                        <li><span class="badge bg-warning text-dark">25-49%</span> Limited availability</li>
+                        <li><span class="badge bg-danger">&lt;25%</span> Low availability</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+{% else %}
+    <div class="alert alert-secondary">
+        <p class="mb-0">No partition information available.</p>
+    </div>
+{% endif %}
 {% endblock %}
