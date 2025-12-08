@@ -1,7 +1,8 @@
 # Standard library imports
 import logging
 import re
-import subprocess
+import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # Third-party imports
@@ -9,6 +10,8 @@ from flask import Blueprint, render_template
 
 jobs_bp = Blueprint('jobs', __name__, url_prefix='/jobs')
 logger = logging.getLogger(__name__.capitalize())
+
+PARTITIONS_FILE = Path('logs/partitions.txt')
 
 
 def _parse_sinfo_output(output: str) -> List[Dict[str, Any]]:
@@ -75,40 +78,35 @@ def _parse_sinfo_output(output: str) -> List[Dict[str, Any]]:
 
 def _get_partition_info() -> Tuple[Optional[List[Dict]], Optional[str]]:
     """
-    Run sinfo -s and return parsed partition data.
+    Read partition data from file (updated by background script).
     
     Returns:
         Tuple of (partitions_list, error_message)
     """
+    if not PARTITIONS_FILE.exists():
+        return None, "Partition data not available. Please wait for data to be collected."
+    
     try:
-        result = subprocess.run(
-            ['sinfo', '-s'],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        # Check if file is stale (older than 10 minutes)
+        file_age = time.time() - PARTITIONS_FILE.stat().st_mtime
+        if file_age > 600:  # 10 minutes
+            return None, "Partition data is stale. Please refresh the page."
         
-        if result.returncode != 0:
-            error_msg = f"sinfo command failed: {result.stderr}"
-            logger.warning(error_msg)
-            return None, error_msg
+        # Read and parse the file
+        with PARTITIONS_FILE.open('r', encoding='utf-8') as f:
+            content = f.read()
         
-        partitions = _parse_sinfo_output(result.stdout)
+        if not content.strip():
+            return None, "Partition data file is empty."
+        
+        partitions = _parse_sinfo_output(content)
         if not partitions:
-            return None, "No partition data found in sinfo output"
+            return None, "No partition data found in file."
         
         return partitions, None
         
-    except subprocess.TimeoutExpired:
-        error_msg = "sinfo command timed out"
-        logger.warning(error_msg)
-        return None, error_msg
-    except FileNotFoundError:
-        error_msg = "sinfo command not found. Ensure SLURM is available."
-        logger.warning(error_msg)
-        return None, error_msg
     except Exception as e:
-        error_msg = f"Error running sinfo: {str(e)}"
+        error_msg = f"Error reading partition data: {str(e)}"
         logger.warning(error_msg, exc_info=True)
         return None, error_msg
 

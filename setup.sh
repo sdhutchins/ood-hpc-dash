@@ -8,6 +8,7 @@ IFS=$'\n\t'
 module load Python/3.11.5-GCCcore-13.2.0
 python -m venv venv
 source venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
 
 # Create bin directory if it doesn't exist

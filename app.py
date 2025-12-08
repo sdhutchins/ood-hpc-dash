@@ -124,9 +124,59 @@ def update_modules_background():
         except Exception as e:
             logger.warning(f"Could not update modules: {e}")
 
-# Start background thread
-thread = threading.Thread(target=update_modules_background, daemon=True)
-thread.start()
+# Update partitions list in background thread (non-blocking)
+def update_partitions_background():
+    """Update partitions list by running update_partitions.sh in background thread."""
+    scripts_dir = Path('scripts')
+    update_script = scripts_dir / 'update_partitions.sh'
+    partitions_file = Path('logs/partitions.txt')
+    
+    # Only update if file doesn't exist or is older than 5 minutes
+    if partitions_file.exists():
+        file_age = time.time() - partitions_file.stat().st_mtime
+        if file_age < 300:  # 5 minutes
+            logger.info("Partitions file is recent, skipping update")
+            return
+    
+    if update_script.exists():
+        try:
+            logger.info("Updating partitions list in background...")
+            # Use bash -l to run as login shell (sources .bashrc, etc.)
+            result = subprocess.run(
+                ['bash', '-l', str(update_script)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=Path.cwd()
+            )
+            if result.returncode == 0:
+                # Check if file was actually created and has content
+                if partitions_file.exists():
+                    file_size = partitions_file.stat().st_size
+                    logger.info(f"Partitions list updated successfully (file size: {file_size} bytes)")
+                    if file_size == 0:
+                        logger.warning("Partitions file is empty - checking script output")
+                        if result.stdout:
+                            logger.warning(f"Script stdout: {result.stdout}")
+                        if result.stderr:
+                            logger.warning(f"Script stderr: {result.stderr}")
+                else:
+                    logger.warning("Partitions file was not created")
+            else:
+                logger.warning(f"Partitions update failed (exit code {result.returncode})")
+                if result.stderr:
+                    logger.warning(f"Script stderr: {result.stderr}")
+                if result.stdout:
+                    logger.warning(f"Script stdout: {result.stdout}")
+        except Exception as e:
+            logger.warning(f"Could not update partitions: {e}")
+
+# Start background threads
+modules_thread = threading.Thread(target=update_modules_background, daemon=True)
+modules_thread.start()
+
+partitions_thread = threading.Thread(target=update_partitions_background, daemon=True)
+partitions_thread.start()
 
 # Register blueprints
 app.register_blueprint(modules_bp)
