@@ -178,6 +178,46 @@ modules_thread.start()
 partitions_thread = threading.Thread(target=update_partitions_background, daemon=True)
 partitions_thread.start()
 
+# Update disk quota in background thread (non-blocking)
+def update_disk_quota_background():
+    """Update disk quota by running get_disk_quota.sh in background thread."""
+    scripts_dir = Path('scripts')
+    update_script = scripts_dir / 'get_disk_quota.sh'
+    quota_file = Path('logs/disk_quota.txt')
+    
+    # Only update if file doesn't exist or is older than 1 hour
+    if quota_file.exists():
+        file_age = time.time() - quota_file.stat().st_mtime
+        if file_age < 3600:  # 1 hour
+            logger.info("Disk quota file is recent, skipping update")
+            return
+    
+    if update_script.exists():
+        try:
+            logger.info("Updating disk quota in background...")
+            result = subprocess.run(
+                ['bash', '-l', str(update_script)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=Path.cwd()
+            )
+            if result.returncode == 0:
+                if quota_file.exists():
+                    file_size = quota_file.stat().st_size
+                    logger.info(f"Disk quota updated successfully (file size: {file_size} bytes)")
+                else:
+                    logger.warning("Disk quota file was not created")
+            else:
+                logger.warning(f"Disk quota update failed (exit code {result.returncode})")
+                if result.stderr:
+                    logger.warning(f"Script stderr: {result.stderr}")
+        except Exception as e:
+            logger.warning(f"Could not update disk quota: {e}")
+
+quota_thread = threading.Thread(target=update_disk_quota_background, daemon=True)
+quota_thread.start()
+
 # Register blueprints
 app.register_blueprint(modules_bp)
 app.register_blueprint(jobs_bp)
@@ -195,9 +235,20 @@ def inject_navbar_color():
 
 @app.route("/")
 def index():
-    """Render the home page."""
+    """Render the home page with disk quota information."""
     logger.info("Home page accessed")
-    return render_template("index.html")
+    
+    # Read disk quota if available
+    quota_file = Path('logs/disk_quota.txt')
+    disk_quota = None
+    if quota_file.exists():
+        try:
+            with quota_file.open('r', encoding='utf-8') as f:
+                disk_quota = f.read().strip()
+        except Exception as e:
+            logger.warning(f"Error reading disk quota: {e}")
+    
+    return render_template("index.html", disk_quota=disk_quota)
 
 if __name__ == "__main__":
 	app.run()

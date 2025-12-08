@@ -3,13 +3,52 @@
 {% block content %}
 <div class="row mb-4">
     <div class="col">
-        <h2 class="pb-2 mb-3 border-bottom">Cluster Partitions</h2>
-        <p class="text-muted">
-            Overview of available compute partitions. Partitions are sorted by availability (most available first).
-            Use this information to choose the best partition for your job submission.
+        <h2 class="pb-2 mb-3 border-bottom">Cluster Partitions & Job Status</h2>
+        <p class="text-muted mb-3">
+            Monitor cluster resources and partition availability. Use this information to choose the best partition for your job submission.
         </p>
+        <div class="mb-3">
+            <a href="https://docs.rc.uab.edu/cheaha/hardware/" target="_blank" class="btn btn-outline-primary btn-sm me-2">
+                <i class="fas fa-external-link-alt me-1"></i>Hardware Documentation
+            </a>
+            <a href="https://docs.rc.uab.edu/cheaha/job_efficiency/" target="_blank" class="btn btn-outline-primary btn-sm">
+                <i class="fas fa-external-link-alt me-1"></i>Job Efficiency Guide
+            </a>
+        </div>
     </div>
 </div>
+
+{# High-level status first #}
+{% if slurm_load %}
+<div class="row mb-4">
+    <div class="col">
+        <div class="card shadow-sm border-primary">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0"><i class="fas fa-chart-line me-2"></i>Cluster Load Summary</h5>
+            </div>
+            <div class="card-body">
+                <pre class="mb-0" style="font-size: 0.95rem; white-space: pre-wrap; font-family: 'Courier New', monospace; background-color: #f8f9fa; padding: 1rem; border-radius: 0.25rem;">{{ slurm_load }}</pre>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{# Reference table (static) #}
+{% if formatted_table %}
+<div class="row mb-4">
+    <div class="col">
+        <div class="card shadow-sm">
+            <div class="card-header bg-info text-white">
+                <h5 class="mb-0"><i class="fas fa-book me-2"></i>Partition Reference Information</h5>
+            </div>
+            <div class="card-body">
+                <pre class="mb-0" style="font-size: 0.85rem; white-space: pre-wrap; font-family: 'Courier New', monospace; background-color: #f8f9fa; padding: 1rem; border-radius: 0.25rem;">{{ formatted_table }}</pre>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
 
 {% if error %}
 <div class="alert alert-warning" role="alert">
@@ -54,22 +93,35 @@
     </div>
     {% endif %}
 
-    {# Partitions Table #}
+    {# Current Partition Status Table (sortable) #}
     <div class="card shadow-sm mb-4">
         <div class="card-header bg-light">
-            <h5 class="mb-0">Partition Details</h5>
+            <h5 class="mb-0"><i class="fas fa-list me-2"></i>Current Partition Status</h5>
         </div>
         <div class="card-body p-0">
             <div class="table-responsive">
-                <table class="table table-hover table-sm align-middle mb-0">
+                <table class="table table-hover table-sm align-middle mb-0" id="partitionsTable">
                     <thead class="table-light">
                         <tr>
-                            <th style="width: 15%;">Partition</th>
-                            <th style="width: 10%;">Status</th>
-                            <th style="width: 12%;">Time Limit</th>
-                            <th style="width: 15%;">Nodes</th>
-                            <th style="width: 12%;">Availability</th>
-                            <th style="width: 36%;">Node List</th>
+                            <th style="width: 12%; cursor: pointer;" onclick="sortTable(0)">
+                                Partition <i class="fas fa-sort ms-1"></i>
+                            </th>
+                            <th style="width: 10%; cursor: pointer;" onclick="sortTable(1)">
+                                Type <i class="fas fa-sort ms-1"></i>
+                            </th>
+                            <th style="width: 8%; cursor: pointer;" onclick="sortTable(2)">
+                                Status <i class="fas fa-sort ms-1"></i>
+                            </th>
+                            <th style="width: 10%; cursor: pointer;" onclick="sortTable(3)">
+                                Time Limit <i class="fas fa-sort ms-1"></i>
+                            </th>
+                            <th style="width: 15%; cursor: pointer;" onclick="sortTable(4)">
+                                Nodes <i class="fas fa-sort ms-1"></i>
+                            </th>
+                            <th style="width: 12%; cursor: pointer;" onclick="sortTable(5)">
+                                Availability <i class="fas fa-sort ms-1"></i>
+                            </th>
+                            <th style="width: 33%;">Node List</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -79,6 +131,17 @@
                                 <strong>{{ part.name }}</strong>
                                 {% if part.name[-1] == '*' %}
                                     <span class="badge bg-info ms-1" title="Default partition">Default</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if part.category == "CPU" %}
+                                    <span class="badge bg-primary">CPU</span>
+                                {% elif part.category == "GPU" %}
+                                    <span class="badge bg-warning text-dark">GPU</span>
+                                {% elif part.category == "Large mem" %}
+                                    <span class="badge bg-danger">Large mem</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">{{ part.category }}</span>
                                 {% endif %}
                             </td>
                             <td>
@@ -152,4 +215,75 @@
         <p class="mb-0">No partition information available.</p>
     </div>
 {% endif %}
+
+<script>
+// Table sorting functionality
+let sortDirection = {};
+
+function sortTable(columnIndex) {
+    const table = document.getElementById('partitionsTable');
+    const tbody = table.querySelector('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    
+    // Toggle sort direction
+    if (!sortDirection[columnIndex]) {
+        sortDirection[columnIndex] = 'asc';
+    } else if (sortDirection[columnIndex] === 'asc') {
+        sortDirection[columnIndex] = 'desc';
+    } else {
+        sortDirection[columnIndex] = 'asc';
+    }
+    
+    const direction = sortDirection[columnIndex];
+    
+    // Sort rows
+    rows.sort((a, b) => {
+        const aCell = a.cells[columnIndex];
+        const bCell = b.cells[columnIndex];
+        
+        let aValue = aCell.textContent.trim();
+        let bValue = bCell.textContent.trim();
+        
+        // Handle numeric values (availability percentage, nodes)
+        if (columnIndex === 5) { // Availability column
+            const aMatch = aValue.match(/(\d+\.?\d*)/);
+            const bMatch = bValue.match(/(\d+\.?\d*)/);
+            aValue = aMatch ? parseFloat(aMatch[1]) : 0;
+            bValue = bMatch ? parseFloat(bMatch[1]) : 0;
+        } else if (columnIndex === 4) { // Nodes column - extract total
+            const aMatch = aValue.match(/\/(\d+)$/);
+            const bMatch = bValue.match(/\/(\d+)$/);
+            aValue = aMatch ? parseInt(aMatch[1]) : 0;
+            bValue = bMatch ? parseInt(bMatch[1]) : 0;
+        } else {
+            // String comparison
+            aValue = aValue.toLowerCase();
+            bValue = bValue.toLowerCase();
+        }
+        
+        if (aValue < bValue) return direction === 'asc' ? -1 : 1;
+        if (aValue > bValue) return direction === 'asc' ? 1 : -1;
+        return 0;
+    });
+    
+    // Remove all rows
+    rows.forEach(row => tbody.removeChild(row));
+    
+    // Add sorted rows
+    rows.forEach(row => tbody.appendChild(row));
+    
+    // Update sort icons
+    const headers = table.querySelectorAll('thead th');
+    headers.forEach((header, idx) => {
+        const icon = header.querySelector('i');
+        if (icon) {
+            if (idx === columnIndex) {
+                icon.className = direction === 'asc' ? 'fas fa-sort-up ms-1' : 'fas fa-sort-down ms-1';
+            } else {
+                icon.className = 'fas fa-sort ms-1';
+            }
+        }
+    });
+}
+</script>
 {% endblock %}

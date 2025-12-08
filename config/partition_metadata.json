@@ -1,0 +1,67 @@
+{
+  "interactive": {
+    "nodes_per_researcher": 1,
+    "priority_tier": 20,
+    "category": "CPU"
+  },
+  "express": {
+    "nodes_per_researcher": "UNLIMITED",
+    "priority_tier": 20,
+    "category": "CPU"
+  },
+  "short": {
+    "nodes_per_researcher": 44,
+    "priority_tier": 16,
+    "category": "CPU"
+  },
+  "medium": {
+    "nodes_per_researcher": 44,
+    "priority_tier": 12,
+    "category": "CPU"
+  },
+  "long": {
+    "nodes_per_researcher": 5,
+    "priority_tier": 8,
+    "category": "CPU"
+  },
+  "intel-dcb": {
+    "nodes_per_researcher": 5,
+    "priority_tier": 8,
+    "category": "CPU"
+  },
+  "amd-hdr100": {
+    "nodes_per_researcher": 5,
+    "priority_tier": 8,
+    "category": "CPU"
+  },
+  "amperenodes": {
+    "nodes_per_researcher": 2,
+    "priority_tier": 16,
+    "category": "GPU"
+  },
+  "amperenodes-medium": {
+    "nodes_per_researcher": 2,
+    "priority_tier": 16,
+    "category": "GPU"
+  },
+  "pascalnodes": {
+    "nodes_per_researcher": "UNLIMITED",
+    "priority_tier": 16,
+    "category": "GPU"
+  },
+  "pascalnodes-medium": {
+    "nodes_per_researcher": "UNLIMITED",
+    "priority_tier": 15,
+    "category": "GPU"
+  },
+  "largemem": {
+    "nodes_per_researcher": 10,
+    "priority_tier": 6,
+    "category": "Large mem"
+  },
+  "largemem-long": {
+    "nodes_per_researcher": 10,
+    "priority_tier": 6,
+    "category": "Large mem"
+  }
+}
