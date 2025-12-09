@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+  /* Override container for full-width editor */
+  .container {
+    max-width: 100% !important;
+    padding: 0 !important;
+  }
+</style>
+<iframe 
+    src="{{ url_for('flaskcode.index') }}" 
+    style="width: 100%; height: calc(100vh - 76px); border: none; display: block;"
+    title="Code Editor"
+    allowfullscreen>
+</iframe>
+{% endblock %}

@@ -15,6 +15,7 @@ import flaskcode
 import json
 
 # Local imports
+from blueprints.editor import editor_bp
 from blueprints.envs import envs_bp
 from blueprints.jobs import jobs_bp
 from blueprints.modules import modules_bp
@@ -226,6 +227,7 @@ app.register_blueprint(jobs_bp)
 app.register_blueprint(envs_bp)
 app.register_blueprint(viewer_bp)
 app.register_blueprint(settings_bp)
+app.register_blueprint(editor_bp)
 
 
 @app.context_processor
