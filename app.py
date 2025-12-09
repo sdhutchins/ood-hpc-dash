@@ -237,6 +237,14 @@ def inject_navbar_color():
     navbar_color = current.get("navbar_color", settings_data.get("navbar_color", "#e3f2fd"))
     return {"navbar_color": navbar_color}
 
+def _strip_ansi_codes(text: str) -> str:
+    """Remove ANSI escape codes from text."""
+    import re
+    # Remove ANSI escape sequences
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    return ansi_escape.sub('', text)
+
+
 def _parse_disk_quota() -> Optional[Dict[str, str]]:
     """Parse disk quota file and return structured data."""
     quota_file = Path('logs/disk_quota.txt')
@@ -254,12 +262,15 @@ def _parse_disk_quota() -> Optional[Dict[str, str]]:
             if not line or line.startswith('---') or 'Disk Quota Report' in line:
                 continue
             
+            # Strip ANSI codes
+            line = _strip_ansi_codes(line)
+            
             # Parse lines like: /gpfs/user/shutchin + /home/shutchin : 131.95GB of 5368.71GB
             # or: /gpfs/scratch/shutchin               :   1.39GB - Please keep scratch clean!
             if '/gpfs/user' in line or '/home' in line:
                 # Home directory line
                 if ':' in line:
-                    parts = line.split(':')
+                    parts = line.split(':', 1)  # Split only on first colon
                     path = parts[0].strip()
                     quota_info = parts[1].strip()
                     quota_data['home'] = {
@@ -269,7 +280,7 @@ def _parse_disk_quota() -> Optional[Dict[str, str]]:
             elif '/gpfs/scratch' in line:
                 # Scratch directory line
                 if ':' in line:
-                    parts = line.split(':')
+                    parts = line.split(':', 1)  # Split only on first colon
                     path = parts[0].strip()
                     quota_info = parts[1].strip()
                     quota_data['scratch'] = {
