@@ -19,38 +19,6 @@
     </div>
 </div>
 
-{# High-level status first #}
-{% if slurm_load %}
-<div class="row mb-4">
-    <div class="col">
-        <div class="card shadow-sm border-primary">
-            <div class="card-header bg-primary text-white">
-                <h5 class="mb-0"><i class="fas fa-chart-line me-2"></i>Cluster Load Summary</h5>
-            </div>
-            <div class="card-body">
-                <pre class="mb-0" style="font-size: 0.95rem; white-space: pre-wrap; font-family: 'Courier New', monospace; background-color: #f8f9fa; padding: 1rem; border-radius: 0.25rem;">{{ slurm_load }}</pre>
-            </div>
-        </div>
-    </div>
-</div>
-{% endif %}
-
-{# Reference table (static) #}
-{% if formatted_table %}
-<div class="row mb-4">
-    <div class="col">
-        <div class="card shadow-sm">
-            <div class="card-header bg-info text-white">
-                <h5 class="mb-0"><i class="fas fa-book me-2"></i>Partition Reference Information</h5>
-            </div>
-            <div class="card-body">
-                <pre class="mb-0" style="font-size: 0.85rem; white-space: pre-wrap; font-family: 'Courier New', monospace; background-color: #f8f9fa; padding: 1rem; border-radius: 0.25rem;">{{ formatted_table }}</pre>
-            </div>
-        </div>
-    </div>
-</div>
-{% endif %}
-
 {% if error %}
 <div class="alert alert-warning" role="alert">
     <strong>Warning:</strong> {{ error }}
@@ -95,7 +63,7 @@
     {% endif %}
 
     {# Current Partition Status Table (sortable) #}
-    <div class="card shadow-sm mb-4">
+    <div class="card shadow-sm mb-3">
         <div class="card-header bg-light">
             <h5 class="mb-0"><i class="fas fa-list me-2"></i>Current Partition Status</h5>
         </div>
@@ -104,7 +72,7 @@
                 <table class="table table-hover table-sm align-middle mb-0" id="partitionsTable">
                     <thead class="table-light">
                         <tr>
-                            <th style="width: 12%; cursor: pointer;" onclick="sortTable(0)">
+                            <th style="width: 15%; cursor: pointer;" onclick="sortTable(0)">
                                 Partition <i class="fas fa-sort ms-1"></i>
                             </th>
                             <th style="width: 10%; cursor: pointer;" onclick="sortTable(1)">
@@ -113,7 +81,7 @@
                             <th style="width: 8%; cursor: pointer;" onclick="sortTable(2)">
                                 Status <i class="fas fa-sort ms-1"></i>
                             </th>
-                            <th style="width: 10%; cursor: pointer;" onclick="sortTable(3)">
+                            <th style="width: 12%; cursor: pointer;" onclick="sortTable(3)">
                                 Time Limit <i class="fas fa-sort ms-1"></i>
                             </th>
                             <th style="width: 15%; cursor: pointer;" onclick="sortTable(4)">
@@ -122,7 +90,6 @@
                             <th style="width: 12%; cursor: pointer;" onclick="sortTable(5)">
                                 Availability <i class="fas fa-sort ms-1"></i>
                             </th>
-                            <th style="width: 33%;">Node List</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -152,16 +119,23 @@
                                     <span class="badge bg-danger">Down</span>
                                 {% endif %}
                             </td>
-                            <td><code>{{ part.timelimit }}</code></td>
                             <td>
-                                <div class="small">
-                                    <span class="text-primary"><strong>{{ part.allocated }}</strong></span> /
-                                    <span class="text-success"><strong>{{ part.idle }}</strong></span> /
-                                    <span class="text-secondary">{{ part.other }}</span> /
-                                    <strong>{{ part.total }}</strong>
-                                    <br>
-                                    <small class="text-muted">(A/I/O/T)</small>
-                                </div>
+                                {% if '-' in part.timelimit %}
+                                    {% set time_parts = part.timelimit.split('-') %}
+                                    {% set days = time_parts[0]|int %}
+                                    {% set hours_part = time_parts[1].split(':')[0]|int %}
+                                    {% if days > 0 %}
+                                        <span title="{{ part.timelimit }}">{{ days }}d{% if hours_part > 0 %}{{ hours_part }}h{% endif %}</span>
+                                    {% else %}
+                                        <span title="{{ part.timelimit }}">{{ hours_part }}h</span>
+                                    {% endif %}
+                                {% else %}
+                                    <span title="{{ part.timelimit }}">{{ part.timelimit.split(':')[0] }}h</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <span class="text-success"><strong>{{ part.idle }}</strong></span> / <strong>{{ part.total }}</strong>
+                                <small class="text-muted d-block">({{ part.allocated }} allocated)</small>
                             </td>
                             <td>
                                 {% if part.availability_pct >= 75 %}
@@ -174,15 +148,40 @@
                                     <span class="badge bg-danger">{{ part.availability_pct }}%</span>
                                 {% endif %}
                             </td>
-                            <td>
-                                <code class="small text-break">{{ part.nodelist }}</code>
-                            </td>
                         </tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
         </div>
+    </div>
+
+    {# Compact Cluster Load Summary and Reference #}
+    <div class="row mb-3">
+        {% if slurm_load %}
+        <div class="col-md-6 mb-3">
+            <div class="card shadow-sm">
+                <div class="card-header bg-primary text-white py-2">
+                    <h6 class="mb-0"><i class="fas fa-chart-line me-2"></i>Cluster Load Summary</h6>
+                </div>
+                <div class="card-body py-2">
+                    <pre class="mb-0 small" style="font-size: 0.8rem; white-space: pre-wrap; font-family: 'Courier New', monospace; background-color: #f8f9fa; padding: 0.75rem; border-radius: 0.25rem; margin: 0;">{{ slurm_load }}</pre>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        {% if formatted_table %}
+        <div class="col-md-6 mb-3">
+            <div class="card shadow-sm">
+                <div class="card-header bg-info text-white py-2">
+                    <h6 class="mb-0"><i class="fas fa-book me-2"></i>Partition Reference</h6>
+                </div>
+                <div class="card-body py-2">
+                    <pre class="mb-0 small" style="font-size: 0.75rem; white-space: pre-wrap; font-family: 'Courier New', monospace; background-color: #f8f9fa; padding: 0.75rem; border-radius: 0.25rem; margin: 0;">{{ formatted_table }}</pre>
+                </div>
+            </div>
+        </div>
+        {% endif %}
     </div>
 
     {# Legend #}
@@ -251,9 +250,9 @@ function sortTable(columnIndex) {
             const bMatch = bValue.match(/(\d+\.?\d*)/);
             aValue = aMatch ? parseFloat(aMatch[1]) : 0;
             bValue = bMatch ? parseFloat(bMatch[1]) : 0;
-        } else if (columnIndex === 4) { // Nodes column - extract total
-            const aMatch = aValue.match(/\/(\d+)$/);
-            const bMatch = bValue.match(/\/(\d+)$/);
+        } else if (columnIndex === 4) { // Nodes column - extract total (format: "X / Y")
+            const aMatch = aValue.match(/\/(\d+)/);
+            const bMatch = bValue.match(/\/(\d+)/);
             aValue = aMatch ? parseInt(aMatch[1]) : 0;
             bValue = bMatch ? parseInt(bMatch[1]) : 0;
         } else {
