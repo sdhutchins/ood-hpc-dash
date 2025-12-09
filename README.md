@@ -2,32 +2,35 @@
 
 # Open OnDemand HPC Dashboard
 
-This is a Flask app that serves as a dashboard on the Cheaha HPC.
+A Flask app that serves as a dashboard on the Cheaha HPC cluster, providing an intuitive interface to monitor resources, browse software modules, manage environments, and view cluster status.
 
-So far, you can:
-- View all modules available by searching and filtering by categories
+![HPC Dashboard](hpc-dashboard.png)
 
-Other features will include:
-- A jobs tab to monitor your current jobs and available resources
-- An HTML viewer
-- An envs tab that will list existing conda environments and tell how to activate them
+## Features
+
+- Browse and search available software modules with category filtering and version management
+- Monitor cluster partitions, job resources, and partition availability with real-time status
+- View and manage conda environments organized by location (Home, Project, Scratch, etc.)
+- View HTML files from whitelisted directories
+- Integrated web-based code editor for file editing
 
 ## Installation
 
 Create the app directory, clone the repository, and run setup:
 
 ```bash
-# Create the sandbox apps directory (Open OnDemand scans this location for apps)
+# Create the sandbox apps directory if it doesn't exist for you
+# Open OnDemand scans this location for apps
 mkdir -p /data/user/$USER/ondemand/dev
 
 # Navigate to the sandbox directory
 cd /data/user/$USER/ondemand/dev
 
-# Clone the repository (replace <repository-url> with your actual repo URL)
-git clone <repository-url> ood-flask-template
+# Clone the repository
+git clone https://github.com/sdhutchins/ood-hpc-dash.git ood-hpc-dash
 
 # Enter the app directory
-cd ood-flask-template
+cd ood-hpc-dash
 
 # Run setup to create venv and install dependencies
 ./setup.sh
