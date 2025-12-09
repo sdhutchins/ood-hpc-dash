@@ -237,7 +237,7 @@ def inject_navbar_color():
     navbar_color = current.get("navbar_color", settings_data.get("navbar_color", "#e3f2fd"))
     return {"navbar_color": navbar_color}
 
-def _parse_disk_quota() -> Optional[Dict[str, Any]]:
+def _parse_disk_quota() -> Optional[Dict[str, str]]:
     """Parse disk quota file and return structured data."""
     quota_file = Path('logs/disk_quota.txt')
     if not quota_file.exists():
@@ -250,27 +250,32 @@ def _parse_disk_quota() -> Optional[Dict[str, Any]]:
         quota_data = {}
         for line in lines:
             line = line.strip()
-            if not line or '|' not in line:
+            # Skip header line and empty lines
+            if not line or line.startswith('---') or 'Disk Quota Report' in line:
                 continue
             
-            parts = line.split('|')
-            if len(parts) >= 7:
-                location = parts[0]  # HOME or SCRATCH
-                filesystem = parts[1]
-                size = parts[2]
-                used = parts[3]
-                available = parts[4]
-                use_pct = parts[5]
-                mounted = parts[6]
-                
-                quota_data[location.lower()] = {
-                    'filesystem': filesystem,
-                    'size': size,
-                    'used': used,
-                    'available': available,
-                    'use_pct': use_pct,
-                    'mounted': mounted,
-                }
+            # Parse lines like: /gpfs/user/shutchin + /home/shutchin : 131.95GB of 5368.71GB
+            # or: /gpfs/scratch/shutchin               :   1.39GB - Please keep scratch clean!
+            if '/gpfs/user' in line or '/home' in line:
+                # Home directory line
+                if ':' in line:
+                    parts = line.split(':')
+                    path = parts[0].strip()
+                    quota_info = parts[1].strip()
+                    quota_data['home'] = {
+                        'path': path,
+                        'quota': quota_info
+                    }
+            elif '/gpfs/scratch' in line:
+                # Scratch directory line
+                if ':' in line:
+                    parts = line.split(':')
+                    path = parts[0].strip()
+                    quota_info = parts[1].strip()
+                    quota_data['scratch'] = {
+                        'path': path,
+                        'quota': quota_info
+                    }
         
         return quota_data if quota_data else None
         

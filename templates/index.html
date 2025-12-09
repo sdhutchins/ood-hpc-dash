@@ -23,37 +23,11 @@
             <div class="border rounded p-3">
               <h6 class="text-muted mb-2"><i class="fas fa-home me-2"></i>Home Directory</h6>
               <div class="mb-2">
-                <small class="text-muted d-block">Filesystem:</small>
-                <code class="small">{{ disk_quota.home.filesystem }}</code>
+                <small class="text-muted d-block">Path:</small>
+                <code class="small">{{ disk_quota.home.path }}</code>
               </div>
-              <div class="row g-2 mb-2">
-                <div class="col-6">
-                  <small class="text-muted d-block">Total Size:</small>
-                  <strong>{{ disk_quota.home.size }}</strong>
-                </div>
-                <div class="col-6">
-                  <small class="text-muted d-block">Used:</small>
-                  <strong class="text-primary">{{ disk_quota.home.used }}</strong>
-                </div>
-              </div>
-              <div class="row g-2 mb-2">
-                <div class="col-6">
-                  <small class="text-muted d-block">Available:</small>
-                  <strong class="text-success">{{ disk_quota.home.available }}</strong>
-                </div>
-                <div class="col-6">
-                  <small class="text-muted d-block">Usage:</small>
-                  <strong>{{ disk_quota.home.use_pct }}</strong>
-                </div>
-              </div>
-              <div class="progress" style="height: 8px;">
-                <div class="progress-bar {% if disk_quota.home.use_pct|replace('%', '')|int > 80 %}bg-danger{% elif disk_quota.home.use_pct|replace('%', '')|int > 60 %}bg-warning{% else %}bg-success{% endif %}" 
-                     role="progressbar" 
-                     style="width: {{ disk_quota.home.use_pct }}"
-                     aria-valuenow="{{ disk_quota.home.use_pct|replace('%', '') }}" 
-                     aria-valuemin="0" 
-                     aria-valuemax="100">
-                </div>
+              <div class="mt-2">
+                <strong>{{ disk_quota.home.quota }}</strong>
               </div>
             </div>
           </div>
@@ -63,37 +37,11 @@
             <div class="border rounded p-3">
               <h6 class="text-muted mb-2"><i class="fas fa-hdd me-2"></i>Scratch Directory</h6>
               <div class="mb-2">
-                <small class="text-muted d-block">Filesystem:</small>
-                <code class="small">{{ disk_quota.scratch.filesystem }}</code>
+                <small class="text-muted d-block">Path:</small>
+                <code class="small">{{ disk_quota.scratch.path }}</code>
               </div>
-              <div class="row g-2 mb-2">
-                <div class="col-6">
-                  <small class="text-muted d-block">Total Size:</small>
-                  <strong>{{ disk_quota.scratch.size }}</strong>
-                </div>
-                <div class="col-6">
-                  <small class="text-muted d-block">Used:</small>
-                  <strong class="text-primary">{{ disk_quota.scratch.used }}</strong>
-                </div>
-              </div>
-              <div class="row g-2 mb-2">
-                <div class="col-6">
-                  <small class="text-muted d-block">Available:</small>
-                  <strong class="text-success">{{ disk_quota.scratch.available }}</strong>
-                </div>
-                <div class="col-6">
-                  <small class="text-muted d-block">Usage:</small>
-                  <strong>{{ disk_quota.scratch.use_pct }}</strong>
-                </div>
-              </div>
-              <div class="progress" style="height: 8px;">
-                <div class="progress-bar {% if disk_quota.scratch.use_pct|replace('%', '')|int > 80 %}bg-danger{% elif disk_quota.scratch.use_pct|replace('%', '')|int > 60 %}bg-warning{% else %}bg-success{% endif %}" 
-                     role="progressbar" 
-                     style="width: {{ disk_quota.scratch.use_pct }}"
-                     aria-valuenow="{{ disk_quota.scratch.use_pct|replace('%', '') }}" 
-                     aria-valuemin="0" 
-                     aria-valuemax="100">
-                </div>
+              <div class="mt-2">
+                <strong>{{ disk_quota.scratch.quota }}</strong>
               </div>
             </div>
           </div>
