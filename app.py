@@ -1,11 +1,12 @@
 # Standard library imports
 import logging
+import os
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-import os
+from typing import Any, Dict, Optional
 
 
 # Third-party imports
@@ -179,16 +180,16 @@ partitions_thread = threading.Thread(target=update_partitions_background, daemon
 partitions_thread.start()
 
 # Update disk quota in background thread (non-blocking)
-def update_disk_quota_background():
+def update_disk_quota_background(force=False):
     """Update disk quota by running get_disk_quota.sh in background thread."""
     scripts_dir = Path('scripts')
     update_script = scripts_dir / 'get_disk_quota.sh'
     quota_file = Path('logs/disk_quota.txt')
     
-    # Only update if file doesn't exist or is older than 1 hour
-    if quota_file.exists():
+    # Always update on startup if forced, otherwise check age
+    if not force and quota_file.exists():
         file_age = time.time() - quota_file.stat().st_mtime
-        if file_age < 3600:  # 1 hour
+        if file_age < 300:  # 5 minutes (reduced from 1 hour for faster updates)
             logger.info("Disk quota file is recent, skipping update")
             return
     
@@ -215,7 +216,8 @@ def update_disk_quota_background():
         except Exception as e:
             logger.warning(f"Could not update disk quota: {e}")
 
-quota_thread = threading.Thread(target=update_disk_quota_background, daemon=True)
+# Run disk quota update immediately on startup (non-blocking)
+quota_thread = threading.Thread(target=lambda: update_disk_quota_background(force=True), daemon=True)
 quota_thread.start()
 
 # Register blueprints
@@ -233,22 +235,58 @@ def inject_navbar_color():
     navbar_color = current.get("navbar_color", settings_data.get("navbar_color", "#e3f2fd"))
     return {"navbar_color": navbar_color}
 
+def _parse_disk_quota() -> Optional[Dict[str, Any]]:
+    """Parse disk quota file and return structured data."""
+    quota_file = Path('logs/disk_quota.txt')
+    if not quota_file.exists():
+        return None
+    
+    try:
+        with quota_file.open('r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        quota_data = {}
+        for line in lines:
+            line = line.strip()
+            if not line or '|' not in line:
+                continue
+            
+            parts = line.split('|')
+            if len(parts) >= 7:
+                location = parts[0]  # HOME or SCRATCH
+                filesystem = parts[1]
+                size = parts[2]
+                used = parts[3]
+                available = parts[4]
+                use_pct = parts[5]
+                mounted = parts[6]
+                
+                quota_data[location.lower()] = {
+                    'filesystem': filesystem,
+                    'size': size,
+                    'used': used,
+                    'available': available,
+                    'use_pct': use_pct,
+                    'mounted': mounted,
+                }
+        
+        return quota_data if quota_data else None
+        
+    except Exception as e:
+        logger.warning(f"Error parsing disk quota: {e}")
+        return None
+
+
 @app.route("/")
 def index():
     """Render the home page with disk quota information."""
     logger.info("Home page accessed")
     
-    # Read disk quota if available
-    quota_file = Path('logs/disk_quota.txt')
-    disk_quota = None
-    if quota_file.exists():
-        try:
-            with quota_file.open('r', encoding='utf-8') as f:
-                disk_quota = f.read().strip()
-        except Exception as e:
-            logger.warning(f"Error reading disk quota: {e}")
+    # Parse disk quota
+    disk_quota = _parse_disk_quota()
+    username = os.environ.get("USER", "user")
     
-    return render_template("index.html", disk_quota=disk_quota)
+    return render_template("index.html", disk_quota=disk_quota, username=username)
 
 if __name__ == "__main__":
 	app.run()

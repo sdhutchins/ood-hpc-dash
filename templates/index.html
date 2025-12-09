@@ -3,7 +3,8 @@
 {% block content %}
 <div class="row mb-4">
   <div class="col">
-    <h1 class="display-5 fw-bold pb-2 mb-3 border-bottom">HPC Dashboard</h1>
+    <br/>
+    <h3 class="display-5 fw-bold pb-2 mb-3 border-bottom">HPC Dashboard</h4>
     <p class="col-md-8 fs-5 text-muted">Welcome to the HPC Dashboard! Monitor your resources, jobs, and environments.</p>
   </div>
 </div>
@@ -13,10 +14,91 @@
   <div class="col">
     <div class="card shadow-sm">
       <div class="card-header bg-primary text-white">
-        <h5 class="mb-0"><i class="fas fa-hdd me-2"></i>Disk Quota</h5>
+        <h5 class="mb-0"><i class="fas fa-hdd me-2"></i>Disk Quota for {{ username }}</h5>
       </div>
       <div class="card-body">
-        <pre class="mb-0" style="font-size: 0.9rem; white-space: pre-wrap; font-family: 'Courier New', monospace;">{{ disk_quota }}</pre>
+        <div class="row">
+          {% if disk_quota.home %}
+          <div class="col-md-6 mb-3">
+            <div class="border rounded p-3">
+              <h6 class="text-muted mb-2"><i class="fas fa-home me-2"></i>Home Directory</h6>
+              <div class="mb-2">
+                <small class="text-muted d-block">Filesystem:</small>
+                <code class="small">{{ disk_quota.home.filesystem }}</code>
+              </div>
+              <div class="row g-2 mb-2">
+                <div class="col-6">
+                  <small class="text-muted d-block">Total Size:</small>
+                  <strong>{{ disk_quota.home.size }}</strong>
+                </div>
+                <div class="col-6">
+                  <small class="text-muted d-block">Used:</small>
+                  <strong class="text-primary">{{ disk_quota.home.used }}</strong>
+                </div>
+              </div>
+              <div class="row g-2 mb-2">
+                <div class="col-6">
+                  <small class="text-muted d-block">Available:</small>
+                  <strong class="text-success">{{ disk_quota.home.available }}</strong>
+                </div>
+                <div class="col-6">
+                  <small class="text-muted d-block">Usage:</small>
+                  <strong>{{ disk_quota.home.use_pct }}</strong>
+                </div>
+              </div>
+              <div class="progress" style="height: 8px;">
+                <div class="progress-bar {% if disk_quota.home.use_pct|replace('%', '')|int > 80 %}bg-danger{% elif disk_quota.home.use_pct|replace('%', '')|int > 60 %}bg-warning{% else %}bg-success{% endif %}" 
+                     role="progressbar" 
+                     style="width: {{ disk_quota.home.use_pct }}"
+                     aria-valuenow="{{ disk_quota.home.use_pct|replace('%', '') }}" 
+                     aria-valuemin="0" 
+                     aria-valuemax="100">
+                </div>
+              </div>
+            </div>
+          </div>
+          {% endif %}
+          {% if disk_quota.scratch %}
+          <div class="col-md-6 mb-3">
+            <div class="border rounded p-3">
+              <h6 class="text-muted mb-2"><i class="fas fa-hdd me-2"></i>Scratch Directory</h6>
+              <div class="mb-2">
+                <small class="text-muted d-block">Filesystem:</small>
+                <code class="small">{{ disk_quota.scratch.filesystem }}</code>
+              </div>
+              <div class="row g-2 mb-2">
+                <div class="col-6">
+                  <small class="text-muted d-block">Total Size:</small>
+                  <strong>{{ disk_quota.scratch.size }}</strong>
+                </div>
+                <div class="col-6">
+                  <small class="text-muted d-block">Used:</small>
+                  <strong class="text-primary">{{ disk_quota.scratch.used }}</strong>
+                </div>
+              </div>
+              <div class="row g-2 mb-2">
+                <div class="col-6">
+                  <small class="text-muted d-block">Available:</small>
+                  <strong class="text-success">{{ disk_quota.scratch.available }}</strong>
+                </div>
+                <div class="col-6">
+                  <small class="text-muted d-block">Usage:</small>
+                  <strong>{{ disk_quota.scratch.use_pct }}</strong>
+                </div>
+              </div>
+              <div class="progress" style="height: 8px;">
+                <div class="progress-bar {% if disk_quota.scratch.use_pct|replace('%', '')|int > 80 %}bg-danger{% elif disk_quota.scratch.use_pct|replace('%', '')|int > 60 %}bg-warning{% else %}bg-success{% endif %}" 
+                     role="progressbar" 
+                     style="width: {{ disk_quota.scratch.use_pct }}"
+                     aria-valuenow="{{ disk_quota.scratch.use_pct|replace('%', '') }}" 
+                     aria-valuemin="0" 
+                     aria-valuemax="100">
+                </div>
+              </div>
+            </div>
+          </div>
+          {% endif %}
+        </div>
       </div>
     </div>
   </div>
