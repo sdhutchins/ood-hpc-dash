@@ -26,8 +26,28 @@
                 <small class="text-muted d-block">Path:</small>
                 <code class="small">{{ disk_quota.home.path }}</code>
               </div>
-              <div class="mt-2">
-                <strong>{{ disk_quota.home.quota }}</strong>
+              <div class="row g-2 mb-2 mt-2">
+                <div class="col-6">
+                  <small class="text-muted d-block">Used:</small>
+                  <strong class="text-primary">{{ "%.2f"|format(disk_quota.home.used_gb) }} GB</strong>
+                </div>
+                <div class="col-6">
+                  <small class="text-muted d-block">Total:</small>
+                  <strong>{{ "%.2f"|format(disk_quota.home.total_gb) }} GB</strong>
+                </div>
+              </div>
+              <div class="mb-2">
+                <small class="text-muted d-block">Usage:</small>
+                <strong>{{ disk_quota.home.percentage }}%</strong>
+              </div>
+              <div class="progress" style="height: 10px;">
+                <div class="progress-bar {% if disk_quota.home.percentage > 80 %}bg-danger{% elif disk_quota.home.percentage > 60 %}bg-warning{% else %}bg-success{% endif %}" 
+                     role="progressbar" 
+                     style="width: {{ disk_quota.home.percentage }}%"
+                     aria-valuenow="{{ disk_quota.home.percentage }}" 
+                     aria-valuemin="0" 
+                     aria-valuemax="100">
+                </div>
               </div>
             </div>
           </div>
@@ -40,9 +60,17 @@
                 <small class="text-muted d-block">Path:</small>
                 <code class="small">{{ disk_quota.scratch.path }}</code>
               </div>
-              <div class="mt-2">
-                <strong>{{ disk_quota.scratch.quota }}</strong>
+              <div class="row g-2 mb-2 mt-2">
+                <div class="col-12">
+                  <small class="text-muted d-block">Used:</small>
+                  <strong class="text-primary">{{ "%.2f"|format(disk_quota.scratch.used_gb) }} GB</strong>
+                </div>
               </div>
+              {% if disk_quota.scratch.message %}
+              <div class="mt-2">
+                <small class="text-muted"><em>{{ disk_quota.scratch.message }}</em></small>
+              </div>
+              {% endif %}
             </div>
           </div>
           {% endif %}

@@ -26,39 +26,60 @@
 {% elif partitions %}
     {# Summary Statistics #}
     {% if summary %}
-    <div class="row mb-4">
-        <div class="col-md-3">
+    <div class="row mb-3">
+        <div class="col-md-2 col-6 mb-2">
             <div class="card shadow-sm border-0">
-                <div class="card-body text-center">
-                    <h5 class="card-title text-muted mb-1">Total Partitions</h5>
-                    <h2 class="mb-0">{{ summary.total_partitions }}</h2>
+                <div class="card-body text-center py-2">
+                    <h6 class="card-title text-muted mb-0 small">Partitions</h6>
+                    <h4 class="mb-0">{{ summary.total_partitions }}</h4>
                 </div>
             </div>
         </div>
-        <div class="col-md-3">
+        <div class="col-md-2 col-6 mb-2">
             <div class="card shadow-sm border-0">
-                <div class="card-body text-center">
-                    <h5 class="card-title text-muted mb-1">Total Nodes</h5>
-                    <h2 class="mb-0">{{ summary.total_nodes }}</h2>
+                <div class="card-body text-center py-2">
+                    <h6 class="card-title text-muted mb-0 small">Total Nodes</h6>
+                    <h4 class="mb-0">{{ summary.total_nodes }}</h4>
                 </div>
             </div>
         </div>
-        <div class="col-md-3">
+        <div class="col-md-2 col-6 mb-2">
             <div class="card shadow-sm border-0">
-                <div class="card-body text-center">
-                    <h5 class="card-title text-muted mb-1">Available Nodes</h5>
-                    <h2 class="mb-0 text-success">{{ summary.available_nodes }}</h2>
+                <div class="card-body text-center py-2">
+                    <h6 class="card-title text-muted mb-0 small">Available</h6>
+                    <h4 class="mb-0 text-success">{{ summary.available_nodes }}</h4>
                 </div>
             </div>
         </div>
-        <div class="col-md-3">
+        <div class="col-md-2 col-6 mb-2">
             <div class="card shadow-sm border-0">
-                <div class="card-body text-center">
-                    <h5 class="card-title text-muted mb-1">Allocated Nodes</h5>
-                    <h2 class="mb-0 text-primary">{{ summary.allocated_nodes }}</h2>
+                <div class="card-body text-center py-2">
+                    <h6 class="card-title text-muted mb-0 small">Allocated</h6>
+                    <h4 class="mb-0 text-primary">{{ summary.allocated_nodes }}</h4>
                 </div>
             </div>
         </div>
+        {% if summary.total_cores %}
+        <div class="col-md-2 col-6 mb-2">
+            <div class="card shadow-sm border-0">
+                <div class="card-body text-center py-2">
+                    <h6 class="card-title text-muted mb-0 small">Total Cores</h6>
+                    <h4 class="mb-0">{{ summary.total_cores }}</h4>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        {% if summary.running_jobs is not none %}
+        <div class="col-md-2 col-6 mb-2">
+            <div class="card shadow-sm border-0">
+                <div class="card-body text-center py-2">
+                    <h6 class="card-title text-muted mb-0 small">Jobs</h6>
+                    <h4 class="mb-0">{{ summary.running_jobs }}/{{ summary.pending_jobs }}</h4>
+                    <small class="text-muted">R/P</small>
+                </div>
+            </div>
+        </div>
+        {% endif %}
     </div>
     {% endif %}
 
@@ -156,33 +177,51 @@
         </div>
     </div>
 
-    {# Compact Cluster Load Summary and Reference #}
-    <div class="row mb-3">
-        {% if slurm_load %}
-        <div class="col-md-6 mb-3">
-            <div class="card shadow-sm">
-                <div class="card-header bg-primary text-white py-2">
-                    <h6 class="mb-0"><i class="fas fa-chart-line me-2"></i>Cluster Load Summary</h6>
-                </div>
-                <div class="card-body py-2">
-                    <pre class="mb-0 small" style="font-size: 0.8rem; white-space: pre-wrap; font-family: 'Courier New', monospace; background-color: #f8f9fa; padding: 0.75rem; border-radius: 0.25rem; margin: 0;">{{ slurm_load }}</pre>
-                </div>
+    {# Partition Reference Table #}
+    {% if partition_reference %}
+    <div class="card shadow-sm mb-3">
+        <div class="card-header bg-info text-white">
+            <h5 class="mb-0"><i class="fas fa-book me-2"></i>Partition Reference Information</h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover table-sm align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="width: 20%;">Partition</th>
+                            <th style="width: 15%;">Nodes</th>
+                            <th style="width: 25%;">Nodes Per Researcher</th>
+                            <th style="width: 15%;">Priority Tier</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for category in ["CPU", "GPU", "Large mem"] %}
+                            {% if partition_reference.get(category) %}
+                            <tr class="table-secondary">
+                                <td colspan="4"><strong>{{ category }}</strong></td>
+                            </tr>
+                            {% for ref in partition_reference[category] %}
+                            <tr>
+                                <td><strong>{{ ref.name }}</strong></td>
+                                <td>{{ ref.nodes }}</td>
+                                <td>
+                                    {% if ref.nodes_per_researcher == "UNLIMITED" %}
+                                        <span class="badge bg-success">UNLIMITED</span>
+                                    {% else %}
+                                        {{ ref.nodes_per_researcher }}
+                                    {% endif %}
+                                </td>
+                                <td><span class="badge bg-secondary">{{ ref.priority_tier }}</span></td>
+                            </tr>
+                            {% endfor %}
+                            {% endif %}
+                        {% endfor %}
+                    </tbody>
+                </table>
             </div>
         </div>
-        {% endif %}
-        {% if formatted_table %}
-        <div class="col-md-6 mb-3">
-            <div class="card shadow-sm">
-                <div class="card-header bg-info text-white py-2">
-                    <h6 class="mb-0"><i class="fas fa-book me-2"></i>Partition Reference</h6>
-                </div>
-                <div class="card-body py-2">
-                    <pre class="mb-0 small" style="font-size: 0.75rem; white-space: pre-wrap; font-family: 'Courier New', monospace; background-color: #f8f9fa; padding: 0.75rem; border-radius: 0.25rem; margin: 0;">{{ formatted_table }}</pre>
-                </div>
-            </div>
-        </div>
-        {% endif %}
     </div>
+    {% endif %}
 
     {# Legend #}
     <div class="card shadow-sm">

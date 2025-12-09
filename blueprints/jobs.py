@@ -135,8 +135,8 @@ def _get_partition_info() -> Tuple[Optional[List[Dict]], Optional[str]]:
         return None, error_msg
 
 
-def _get_slurm_load() -> Optional[str]:
-    """Read slurm-load output from file."""
+def _parse_slurm_load() -> Optional[Dict[str, Any]]:
+    """Parse slurm-load output and return structured data."""
     if not SLURM_LOAD_FILE.exists():
         return None
     
@@ -149,10 +149,41 @@ def _get_slurm_load() -> Optional[str]:
         with SLURM_LOAD_FILE.open('r', encoding='utf-8') as f:
             content = f.read().strip()
         
-        return content if content else None
+        if not content:
+            return None
+        
+        # Parse the output
+        load_data = {}
+        lines = content.split('\n')
+        for line in lines:
+            line = line.strip()
+            if 'Allocated nodes:' in line:
+                load_data['allocated_nodes'] = int(line.split(':')[1].strip())
+            elif 'Idle nodes:' in line:
+                load_data['idle_nodes'] = int(line.split(':')[1].strip())
+            elif 'Total CPU cores:' in line:
+                load_data['total_cores'] = int(line.split(':')[1].strip())
+            elif 'Allocated cores:' in line:
+                load_data['allocated_cores'] = int(line.split(':')[1].strip())
+            elif 'Idle cores:' in line:
+                load_data['idle_cores'] = int(line.split(':')[1].strip())
+            elif 'Running/Pending jobs:' in line:
+                jobs_part = line.split(':')[1].strip()
+                if '/' in jobs_part:
+                    parts = jobs_part.split('/')
+                    load_data['running_jobs'] = int(parts[0].strip())
+                    load_data['pending_jobs'] = int(parts[1].strip())
+            elif '% of used cores' in line:
+                pct = line.split(':')[1].strip().replace('%', '')
+                load_data['cores_pct'] = float(pct)
+            elif '% of used nodes' in line:
+                pct = line.split(':')[1].strip().replace('%', '')
+                load_data['nodes_pct'] = float(pct)
+        
+        return load_data if load_data else None
         
     except Exception as e:
-        logger.warning(f"Error reading slurm-load data: {e}", exc_info=True)
+        logger.warning(f"Error parsing slurm-load data: {e}", exc_info=True)
         return None
 
 
@@ -183,17 +214,17 @@ def _format_time_limit(timelimit: str) -> str:
         return f"{days} days"
 
 
-def _generate_formatted_partition_table(partitions: List[Dict[str, Any]]) -> str:
-    """Generate formatted partition table in markdown-style format."""
+def _generate_partition_reference_data(partitions: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Generate structured partition reference data grouped by category."""
     if not PARTITION_METADATA_FILE.exists():
-        return ""
+        return {}
     
     try:
         with PARTITION_METADATA_FILE.open('r', encoding='utf-8') as f:
             metadata = json.load(f)
     except Exception as e:
         logger.warning(f"Error loading partition metadata: {e}")
-        return ""
+        return {}
     
     # Create a dict mapping partition names to partition data
     partition_dict = {p['name'].rstrip('*'): p for p in partitions}
@@ -205,59 +236,34 @@ def _generate_formatted_partition_table(partitions: List[Dict[str, Any]]) -> str
             category = metadata[part_name]['category']
             if category not in categories:
                 categories[category] = []
-            categories[category].append((part_name, part_data, metadata[part_name]))
-    
-    # Build the table
-    lines = []
-    lines.append("-------------------    Available Slurm Partitions    --------------------------")
-    lines.append("")
-    lines.append("| Partition          | Nodes | Nodes Per Researcher |       Time Limit | Priority Tier |")
-    lines.append("| :----------------- | ----: | -------------------: | ---------------: | ------------: |")
-    
-    # Output by category
-    category_order = ["CPU", "GPU", "Large mem"]
-    for category in category_order:
-        if category not in categories:
-            continue
-        
-        lines.append(f"| **{category}**            |       |                      |                  |               |")
-        
-        # Sort partitions within category
-        cat_partitions = sorted(categories[category], key=lambda x: x[0])
-        
-        for part_name, part_data, meta in cat_partitions:
-            nodes = part_data['total']
-            nodes_per_researcher = meta['nodes_per_researcher']
-            time_limit = _format_time_limit(part_data['timelimit'])
-            priority_tier = meta['priority_tier']
             
-            # Format nodes per researcher
-            if isinstance(nodes_per_researcher, str):
-                nodes_per_researcher_str = nodes_per_researcher
-            else:
-                nodes_per_researcher_str = str(nodes_per_researcher)
+            nodes_per_researcher = metadata[part_name]['nodes_per_researcher']
+            priority_tier = metadata[part_name]['priority_tier']
             
-            lines.append(
-                f"| {part_name:<18} | {nodes:>5} | {nodes_per_researcher_str:>20} | {time_limit:>15} | {priority_tier:>13} |"
-            )
-        
-        lines.append("|                    |       |                      |                  |               |")
+            categories[category].append({
+                'name': part_name,
+                'nodes': part_data['total'],
+                'nodes_per_researcher': nodes_per_researcher if isinstance(nodes_per_researcher, str) else str(nodes_per_researcher),
+                'priority_tier': priority_tier,
+            })
     
-    lines.append("+--------------------+-------+----------------------+------------------+---------------+")
+    # Sort partitions within each category
+    for category in categories:
+        categories[category].sort(key=lambda x: x['name'])
     
-    return "\n".join(lines)
+    return categories
 
 
 @jobs_bp.route('/')
 def jobs():
     """Render the jobs page with partition information."""
     partitions, error = _get_partition_info()
-    slurm_load = _get_slurm_load()
+    slurm_load_data = _parse_slurm_load()
     
-    # Generate formatted partition table
-    formatted_table = ""
+    # Generate partition reference data
+    partition_reference = {}
     if partitions:
-        formatted_table = _generate_formatted_partition_table(partitions)
+        partition_reference = _generate_partition_reference_data(partitions)
     
     # Calculate summary statistics
     summary = None
@@ -268,12 +274,22 @@ def jobs():
             'available_nodes': sum(p['idle'] for p in partitions),
             'allocated_nodes': sum(p['allocated'] for p in partitions),
         }
+        # Add slurm_load data to summary if available
+        if slurm_load_data:
+            summary.update({
+                'total_cores': slurm_load_data.get('total_cores'),
+                'allocated_cores': slurm_load_data.get('allocated_cores'),
+                'idle_cores': slurm_load_data.get('idle_cores'),
+                'running_jobs': slurm_load_data.get('running_jobs'),
+                'pending_jobs': slurm_load_data.get('pending_jobs'),
+                'cores_pct': slurm_load_data.get('cores_pct'),
+                'nodes_pct': slurm_load_data.get('nodes_pct'),
+            })
     
     return render_template(
         'jobs.html',
         partitions=partitions,
         summary=summary,
-        slurm_load=slurm_load,
-        formatted_table=formatted_table,
+        partition_reference=partition_reference,
         error=error,
     )

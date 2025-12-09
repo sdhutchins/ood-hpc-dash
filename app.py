@@ -245,8 +245,29 @@ def _strip_ansi_codes(text: str) -> str:
     return ansi_escape.sub('', text)
 
 
-def _parse_disk_quota() -> Optional[Dict[str, str]]:
-    """Parse disk quota file and return structured data."""
+def _parse_size_to_gb(size_str: str) -> float:
+    """Convert size string (e.g., '131.95GB', '1.39GB') to GB as float."""
+    size_str = size_str.strip().upper()
+    if size_str.endswith('GB'):
+        try:
+            return float(size_str[:-2].strip())
+        except ValueError:
+            return 0.0
+    elif size_str.endswith('TB'):
+        try:
+            return float(size_str[:-2].strip()) * 1024
+        except ValueError:
+            return 0.0
+    elif size_str.endswith('MB'):
+        try:
+            return float(size_str[:-2].strip()) / 1024
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _parse_disk_quota() -> Optional[Dict[str, Any]]:
+    """Parse disk quota file and return structured data with percentages."""
     quota_file = Path('logs/disk_quota.txt')
     if not quota_file.exists():
         return None
@@ -270,22 +291,57 @@ def _parse_disk_quota() -> Optional[Dict[str, str]]:
             if '/gpfs/user' in line or '/home' in line:
                 # Home directory line
                 if ':' in line:
-                    parts = line.split(':', 1)  # Split only on first colon
+                    parts = line.split(':', 1)
                     path = parts[0].strip()
                     quota_info = parts[1].strip()
+                    
+                    # Parse "131.95GB of 5368.71GB" or similar
+                    used_gb = 0.0
+                    total_gb = 0.0
+                    if ' of ' in quota_info:
+                        quota_parts = quota_info.split(' of ')
+                        used_str = quota_parts[0].strip()
+                        total_str = quota_parts[1].split()[0].strip()  # Get first part before any extra text
+                        used_gb = _parse_size_to_gb(used_str)
+                        total_gb = _parse_size_to_gb(total_str)
+                    
+                    percentage = (used_gb / total_gb * 100) if total_gb > 0 else 0.0
+                    
                     quota_data['home'] = {
                         'path': path,
-                        'quota': quota_info
+                        'quota': quota_info,
+                        'used_gb': used_gb,
+                        'total_gb': total_gb,
+                        'percentage': round(percentage, 1)
                     }
             elif '/gpfs/scratch' in line:
                 # Scratch directory line
                 if ':' in line:
-                    parts = line.split(':', 1)  # Split only on first colon
+                    parts = line.split(':', 1)
                     path = parts[0].strip()
                     quota_info = parts[1].strip()
+                    
+                    # Parse "1.39GB" or "1.39GB - Please keep scratch clean!"
+                    used_gb = 0.0
+                    total_gb = 0.0
+                    # Scratch might not have "of X" format, just show used
+                    quota_parts = quota_info.split('-')[0].strip()  # Get part before "-"
+                    used_gb = _parse_size_to_gb(quota_parts)
+                    # For scratch, we don't have total quota info, so percentage is N/A
+                    percentage = None
+                    
+                    # Extract message if present
+                    message = ''
+                    if '-' in quota_info:
+                        message = quota_info.split('-', 1)[1].strip()
+                    
                     quota_data['scratch'] = {
                         'path': path,
-                        'quota': quota_info
+                        'quota': quota_info,
+                        'used_gb': used_gb,
+                        'total_gb': total_gb,
+                        'percentage': percentage,
+                        'message': message
                     }
         
         return quota_data if quota_data else None
