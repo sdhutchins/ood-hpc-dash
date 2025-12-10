@@ -154,9 +154,11 @@
         let allModules = {% if modules %}{{ modules|tojson|safe }}{% else %}[]{% endif %};
         let categoryOrder = {% if category_order %}{{ category_order|tojson|safe }}{% else %}[]{% endif %};
         
-        {% if cache_empty or not modules or modules|length == 0 %}
-        // Start streaming modules if cache is empty or no modules loaded
-        function startStreamingModules() {
+        // Only start streaming if cache is truly empty
+        {% if cache_empty %}
+        // Start streaming modules if cache is empty
+        (function() {
+            function startStreamingModules() {
             // Show loading state
             document.getElementById('loadingCard').classList.remove('d-none');
             document.getElementById('modulesCard').classList.add('d-none');
@@ -233,8 +235,8 @@
                             } else if (data.type === 'module') {
                                 // Show table when first module arrives
                                 if (moduleCount === 0) {
-                                    document.getElementById('loadingCard').classList.add('d-none');
-                                    document.getElementById('modulesCard').classList.remove('d-none');
+                        document.getElementById('loadingCard').classList.add('d-none');
+                        document.getElementById('modulesCard').classList.remove('d-none');
                                 }
                             
                                 // Add module to collection
@@ -284,8 +286,8 @@
                                 }
                                 
                                 // Update count
-                                const countEl = document.getElementById('uniqueCount');
-                                if (countEl) {
+                        const countEl = document.getElementById('uniqueCount');
+                        if (countEl) {
                                     countEl.textContent = moduleCount;
                                 }
                                 
@@ -406,7 +408,7 @@
                     document.getElementById('loadingCard').classList.remove('d-none');
                     document.getElementById('modulesCard').classList.add('d-none');
                 };
-            })
+                })
                 .catch(error => {
                     console.error('Error starting module stream:', error);
                     
@@ -422,8 +424,106 @@
         
         startStreamingModules();
         {% else %}
-        // Populate category filter if modules are already loaded
+        // Modules are already cached - populate category filter
         populateCategoryFilter(categoryOrder);
+        
+        // Load descriptions for cached modules in background
+        if (allModules.length > 0) {
+            // Check if any modules are missing descriptions
+            const modulesNeedingDescriptions = allModules.filter(m => !m.description || m.description.trim() === '');
+            if (modulesNeedingDescriptions.length > 0) {
+                // Show descriptions loading alert
+                const descriptionsAlert = document.getElementById('descriptionsLoadingAlert');
+                if (descriptionsAlert) {
+                    descriptionsAlert.classList.remove('d-none');
+                }
+                
+                // Start loading descriptions without clearing cache
+                fetch('{{ url_for("modules.load_descriptions") }}', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Failed to start description loading');
+                    }
+                    
+                    // Create EventSource for streaming descriptions only
+                    const eventSource = new EventSource('{{ url_for("modules.stream_descriptions") }}');
+                    
+                    eventSource.onmessage = function(event) {
+                        try {
+                            const data = JSON.parse(event.data);
+                            
+                            if (data.type === 'descriptions_start') {
+                                // Already shown
+                            } else if (data.type === 'module_update') {
+                                // Update description for a specific module
+                                const moduleName = data.module_name;
+                                const description = data.description || '';
+                                
+                                // Update in allModules array
+                                const moduleIndex = allModules.findIndex(m => m.name === moduleName);
+                                if (moduleIndex !== -1) {
+                                    allModules[moduleIndex].description = description;
+                                }
+                                
+                                // Find the row and update description
+                                const tbody = document.getElementById('modulesTableBody');
+                                if (tbody) {
+                                    const rows = tbody.querySelectorAll('tr.module-row');
+                                    rows.forEach(row => {
+                                        const nameCell = row.querySelector('td:first-child code');
+                                        if (nameCell) {
+                                            const cellText = nameCell.textContent.trim();
+                                            if (cellText === moduleName) {
+                                                const descCell = row.querySelector('td:nth-child(2)');
+                                                if (descCell) {
+                                                    if (description) {
+                                                        descCell.innerHTML = '<small class="text-muted">' + escapeHtml(description) + '</small>';
+                                                    } else {
+                                                        descCell.innerHTML = '<span class="text-muted">-</span>';
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                            } else if (data.type === 'descriptions_complete') {
+                                // Hide descriptions loading alert
+                                const descriptionsAlert = document.getElementById('descriptionsLoadingAlert');
+                                if (descriptionsAlert) {
+                                    descriptionsAlert.classList.add('d-none');
+                                }
+                                eventSource.close();
+                            } else if (data.type === 'complete') {
+                                eventSource.close();
+                            }
+                        } catch (error) {
+                            console.error('Error parsing SSE data:', error);
+                        }
+                    };
+                    
+                    eventSource.onerror = function(error) {
+                        console.error('EventSource error:', error);
+                        eventSource.close();
+                        const descriptionsAlert = document.getElementById('descriptionsLoadingAlert');
+                        if (descriptionsAlert) {
+                            descriptionsAlert.classList.add('d-none');
+                        }
+                    };
+                })
+                .catch(error => {
+                    console.error('Error starting description loading:', error);
+                    const descriptionsAlert = document.getElementById('descriptionsLoadingAlert');
+                    if (descriptionsAlert) {
+                        descriptionsAlert.classList.add('d-none');
+                    }
+                });
+            }
+        }
         {% endif %}
         
         function populateCategoryFilter(categories) {

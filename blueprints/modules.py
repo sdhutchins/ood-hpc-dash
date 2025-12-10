@@ -208,7 +208,7 @@ def _get_module_details(module_name: str) -> Tuple[Optional[Dict[str, Any]], Opt
         Tuple of (dict with 'versions' list and 'description' string, error_message)
         Returns (None, None) if module has no output (skip it, not an error)
     """
-    output, error = _call_module_command(f'module --redirect spider {module_name}', timeout=3)
+    output, error = _call_module_command(f'module --redirect spider {module_name}', timeout=10)
     if error:
         # For individual modules, empty output is not fatal - just skip it
         if "empty output" in error.lower():
@@ -605,7 +605,7 @@ def _categorize_module(module_name, categories_config):
     return 'Misc'
 
 
-
+    
 def _group_modules_by_name(modules_data: Dict[str, Dict[str, Any]]):
     """Group modules by base name with descriptions.
     
@@ -625,11 +625,11 @@ def _group_modules_by_name(modules_data: Dict[str, Dict[str, Any]]):
         
         if not versions:
             continue
-        
+            
         # Determine base name from first version
-        # For hierarchical modules like 'rc/3DSlicer/5.2.2',
-        # base name is everything except the last segment
-        # For simple modules like 'Armadillo/11.4.3', base is first segment
+            # For hierarchical modules like 'rc/3DSlicer/5.2.2',
+            # base name is everything except the last segment
+            # For simple modules like 'Armadillo/11.4.3', base is first segment
         first_version = versions[0]
         if '/' in first_version:
             parts = first_version.split('/')
@@ -713,9 +713,10 @@ def timestamp_to_datetime_filter(timestamp: Optional[float]) -> str:
 @modules_bp.route('/')
 def modules():
     """Render the modules page."""
-    # Check if cache exists - if not, page will start streaming
-    grouped_modules = _get_cached_modules() if _modules_cache is not None else []
+    # Get cached modules
+    grouped_modules = _get_cached_modules()
     unique_count = len(grouped_modules)
+    cache_exists = _modules_cache is not None and len(grouped_modules) > 0
     
     # Group modules by category for display
     modules_by_category = {}
@@ -740,7 +741,7 @@ def modules():
         modules_by_category=modules_by_category,
         category_order=category_order,
         unique_count=unique_count,
-        cache_empty=_modules_cache is None,
+        cache_empty=not cache_exists,
         cache_timestamp=cache_timestamp
     )
 
@@ -765,9 +766,9 @@ def modules_list():
         category_order.append('Misc')
     
     return jsonify({
-        'modules': grouped_modules,
-        'modules_by_category': modules_by_category,
-        'category_order': category_order,
+            'modules': grouped_modules,
+            'modules_by_category': modules_by_category,
+            'category_order': category_order,
         'unique_count': unique_count,
         'loading': False
     })
@@ -784,6 +785,23 @@ def refresh_start():
         
         _streaming_in_progress = True
         _clear_modules_cache()
+    
+    return jsonify({'status': 'started'})
+
+
+@modules_bp.route('/load-descriptions', methods=['POST'])
+def load_descriptions():
+    """Load descriptions for cached modules without clearing cache."""
+    global _streaming_in_progress
+    
+    with _streaming_lock:
+        if _streaming_in_progress:
+            return jsonify({'error': 'Description loading already in progress'}), 409
+        
+        if _modules_cache is None or len(_modules_cache) == 0:
+            return jsonify({'error': 'No cached modules to load descriptions for'}), 400
+        
+        _streaming_in_progress = True
     
     return jsonify({'status': 'started'})
 
@@ -814,6 +832,101 @@ def refresh_modules():
                     yield f"data: {json.dumps(event)}\n\n"
                 elif event['type'] == 'error':
                     yield f"data: {json.dumps(event)}\n\n"
+        finally:
+            with _streaming_lock:
+                _streaming_in_progress = False
+    
+    return Response(generate(), mimetype='text/event-stream', headers={
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no'
+    })
+
+
+@modules_bp.route('/descriptions-stream')
+def stream_descriptions():
+    """Stream descriptions for cached modules without clearing cache."""
+    global _streaming_in_progress
+    
+    def generate():
+        global _streaming_in_progress
+        try:
+            # Get cached modules
+            if _modules_cache is None or len(_modules_cache) == 0:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'No cached modules'})}\n\n"
+                return
+            
+            # Extract family names from cached modules
+            families = []
+            module_name_map = {}  # Map base_name -> family_name for lookup
+            
+            # We need to reverse-engineer family names from cached modules
+            # Since we have versions, we can extract family names
+            for module in _modules_cache:
+                if module['versions'] and len(module['versions']) > 0:
+                    # Get first version to determine family
+                    first_version = module['versions'][0]
+                    if '/' in first_version:
+                        parts = first_version.split('/')
+                        if len(parts) > 2:
+                            family_name = '/'.join(parts[:-1])
+                        else:
+                            family_name = parts[0]
+                    else:
+                        family_name = module['name']
+                    
+                    if family_name not in families:
+                        families.append(family_name)
+                        module_name_map[family_name] = module['name']
+            
+            total_families = len(families)
+            yield f"data: {json.dumps({'type': 'descriptions_start', 'message': 'Loading descriptions...'})}\n\n"
+            
+            # Fetch descriptions in parallel
+            max_workers = 100
+            completed = 0
+            failed_count = 0
+            
+            def fetch_description(family_name):
+                """Fetch description for a single module family."""
+                try:
+                    details, error = _get_module_details(family_name)
+                    if error is not None:
+                        return None, f"Error: {error}", family_name
+                    if details is None:
+                        return None, None, family_name
+                    return details.get('description', ''), None, family_name
+                except Exception as e:
+                    logger.error(f"Exception getting description for {family_name}: {e}", exc_info=True)
+                    return None, f"Exception: {str(e)}", family_name
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_family = {executor.submit(fetch_description, family_name): family_name 
+                                   for family_name in families}
+                
+                for future in as_completed(future_to_family):
+                    family_name = future_to_family[future]
+                    completed += 1
+                    
+                    if completed % 10 == 0 or completed == total_families:
+                        yield f"data: {json.dumps({'type': 'progress', 'message': f'Loading descriptions: {completed}/{total_families}', 'total': total_families, 'current': completed})}\n\n"
+                    
+                    try:
+                        description, error, _ = future.result()
+                        
+                        if error is not None and error.startswith('Error:'):
+                            failed_count += 1
+                            continue
+                        
+                        if description is None:
+                            description = ''
+                        
+                        base_name = module_name_map.get(family_name, family_name)
+                        yield f"data: {json.dumps({'type': 'module_update', 'module_name': base_name, 'description': description})}\n\n"
+                    except Exception as e:
+                        logger.error(f"Error processing description for {family_name}: {e}", exc_info=True)
+                        failed_count += 1
+            
+            yield f"data: {json.dumps({'type': 'descriptions_complete', 'message': 'All descriptions loaded'})}\n\n"
         finally:
             with _streaming_lock:
                 _streaming_in_progress = False
