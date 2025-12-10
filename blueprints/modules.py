@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -119,20 +120,34 @@ def _get_module_families() -> Tuple[Optional[List[str]], Optional[str]]:
     Returns:
         Tuple of (list of module family names, error_message)
     """
-    output, error = _call_module_command('module -t spider', timeout=60)
-    if error:
-        logger.error(f"Error calling module -t spider: {error}")
-        return None, error
-    
-    if not output or not output.strip():
-        logger.error("module -t spider returned empty output")
-        # Try alternative: check if module function exists
-        test_output, test_error = _call_module_command('type module', timeout=5)
-        if test_error:
-            logger.error(f"module function check failed: {test_error}")
-        else:
-            logger.info(f"module function check output: {test_output[:200]}")
-        return None, "module -t spider returned empty output"
+    # Try with retry
+    max_retries = 2
+    for attempt in range(max_retries):
+        output, error = _call_module_command('module -t spider', timeout=60)
+        if error:
+            if attempt < max_retries - 1:
+                logger.warning(f"Attempt {attempt + 1} failed: {error}, retrying...")
+                time.sleep(1)  # Brief delay before retry
+                continue
+            logger.error(f"Error calling module -t spider after {max_retries} attempts: {error}")
+            return None, error
+        
+        if not output or not output.strip():
+            if attempt < max_retries - 1:
+                logger.warning(f"Attempt {attempt + 1} returned empty output, retrying...")
+                time.sleep(1)
+                continue
+            logger.error("module -t spider returned empty output after retries")
+            # Try alternative: check if module function exists
+            test_output, test_error = _call_module_command('type module', timeout=5)
+            if test_error:
+                logger.error(f"module function check failed: {test_error}")
+            else:
+                logger.info(f"module function check output: {test_output[:200]}")
+            return None, "module -t spider returned empty output"
+        
+        # Success - break out of retry loop
+        break
     
     # Parse output: each line is a module family name
     families = []
@@ -253,13 +268,20 @@ def _get_all_modules_two_stage_streaming():
         Dict with 'type' ('progress', 'module', 'complete', 'error') and relevant data
     """
     # Step 1: Get all module family names
-    families, error = _get_module_families()
-    if error:
-        yield {'type': 'error', 'message': error}
-        return
-    
-    if not families:
-        yield {'type': 'error', 'message': 'No module families found'}
+    try:
+        families, error = _get_module_families()
+        if error:
+            logger.error(f"Error getting module families during refresh: {error}")
+            yield {'type': 'error', 'message': f'Failed to get module list: {error}'}
+            return
+        
+        if not families:
+            logger.error("No module families found during refresh")
+            yield {'type': 'error', 'message': 'No module families found'}
+            return
+    except Exception as e:
+        logger.error(f"Exception getting module families: {e}", exc_info=True)
+        yield {'type': 'error', 'message': f'Exception: {str(e)}'}
         return
     
     total_families = len(families)
@@ -272,6 +294,10 @@ def _get_all_modules_two_stage_streaming():
     
     for i, family_name in enumerate(families):
         yield {'type': 'progress', 'message': f'Processing {family_name}', 'total': total_families, 'current': i + 1}
+        
+        # Small delay to avoid overwhelming the module system
+        if i > 0 and i % 10 == 0:
+            time.sleep(0.1)
         
         details, error = _get_module_details(family_name)
         # If error is None, it means we should skip this module (not a fatal error)
