@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -116,6 +117,9 @@ def _call_module_command(command: str, timeout: int = 30) -> Tuple[Optional[str]
         error_msg = result.stderr if result.stderr else f"Exit code: {result.returncode}"
         return None, f"module command failed: {error_msg}"
     except subprocess.TimeoutExpired:
+        # subprocess.run with timeout should already kill the process
+        # Log the timeout for debugging
+        logger.warning(f"Module command timed out after {timeout}s: {command[:50]}")
         return None, f"module command timed out after {timeout}s"
     except Exception as e:
         return None, f"Error calling module command: {str(e)}"
@@ -321,7 +325,8 @@ def _get_all_modules_two_stage_streaming():
     categories_config = _load_categories()
     
     # Process modules in parallel batches for better performance
-    max_workers = 50  # Process 50 modules concurrently
+    # Reduced from 50 to 20 to prevent resource exhaustion and hanging
+    max_workers = 20  # Process 20 modules concurrently
     completed = 0
     
     def process_module(family_name):
@@ -338,65 +343,76 @@ def _get_all_modules_two_stage_streaming():
             return None, f"Exception: {str(e)}", family_name
     
     # Use ThreadPoolExecutor for parallel processing
+    # Process in batches to avoid overwhelming the system
+    batch_size = max_workers * 2  # Process 2x workers worth at a time
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks
-        future_to_family = {executor.submit(process_module, family_name): family_name 
-                           for family_name in families}
-        
-        # Process completed tasks as they finish
-        for future in as_completed(future_to_family):
-            family_name = future_to_family[future]
-            completed += 1
+        # Process families in batches to avoid submitting all at once
+        for batch_start in range(0, len(families), batch_size):
+            batch_end = min(batch_start + batch_size, len(families))
+            batch_families = families[batch_start:batch_end]
             
-            # Yield progress update
-            yield {'type': 'progress', 'message': f'Processing {family_name}', 'total': total_families, 'current': completed}
+            # Submit batch of tasks
+            future_to_family = {executor.submit(process_module, family_name): family_name 
+                               for family_name in batch_families}
             
-            try:
-                details, error, _ = future.result()
+            # Process completed tasks as they finish
+            for future in as_completed(future_to_family):
+                family_name = future_to_family[future]
+                completed += 1
                 
-                if error is not None and error.startswith('Error:'):
-                    logger.warning(f"Failed to get details for {family_name}: {error}")
-                    failed_count += 1
-                    continue
+                # Yield progress update
+                yield {'type': 'progress', 'message': f'Processing {family_name}', 'total': total_families, 'current': completed}
                 
-                if details is None:
-                    continue
-                
-                if details and details.get('versions'):
-                    modules_data[family_name] = {
-                        'versions': details['versions'],
-                        'description': details.get('description', '')
-                    }
+                try:
+                    details, error, _ = future.result()
                     
-                    # Group and yield this module immediately
-                    versions = details['versions']
-                    description = details.get('description', '')
+                    if error is not None and error.startswith('Error:'):
+                        logger.warning(f"Failed to get details for {family_name}: {error}")
+                        failed_count += 1
+                        continue
                     
-                    # Determine base name from first version
-                    first_version = versions[0]
-                    if '/' in first_version:
-                        parts = first_version.split('/')
-                        if len(parts) > 2:
-                            base_name = '/'.join(parts[:-1])
+                    if details is None:
+                        continue
+                    
+                    if details and details.get('versions'):
+                        modules_data[family_name] = {
+                            'versions': details['versions'],
+                            'description': details.get('description', '')
+                        }
+                        
+                        # Group and yield this module immediately
+                        versions = details['versions']
+                        description = details.get('description', '')
+                        
+                        # Determine base name from first version
+                        first_version = versions[0]
+                        if '/' in first_version:
+                            parts = first_version.split('/')
+                            if len(parts) > 2:
+                                base_name = '/'.join(parts[:-1])
+                            else:
+                                base_name = parts[0]
                         else:
-                            base_name = parts[0]
-                    else:
-                        base_name = family_name
-                    
-                    category = _categorize_module(base_name, categories_config)
-                    sorted_versions = sorted(versions, key=_natural_sort_key) if versions else []
-                    
-                    grouped_module = {
-                        'name': base_name,
-                        'versions': sorted_versions,
-                        'description': description,
-                        'category': category
-                    }
-                    
-                    yield {'type': 'module', 'module': grouped_module}
-            except Exception as e:
-                logger.error(f"Error processing result for {family_name}: {e}", exc_info=True)
-                failed_count += 1
+                            base_name = family_name
+                        
+                        category = _categorize_module(base_name, categories_config)
+                        sorted_versions = sorted(versions, key=_natural_sort_key) if versions else []
+                        
+                        grouped_module = {
+                            'name': base_name,
+                            'versions': sorted_versions,
+                            'description': description,
+                            'category': category
+                        }
+                        
+                        yield {'type': 'module', 'module': grouped_module}
+                except Exception as e:
+                    logger.error(f"Error processing result for {family_name}: {e}", exc_info=True)
+                    failed_count += 1
+                
+                # Small delay every 10 modules to prevent overwhelming the system
+                if completed % 10 == 0 and completed > 0:
+                    time.sleep(0.1)
     
     if failed_count > 0:
         yield {'type': 'progress', 'message': f'Failed to get details for {failed_count} modules', 'total': total_families, 'current': total_families}
