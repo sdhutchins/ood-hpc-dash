@@ -321,7 +321,7 @@ def _get_all_modules_two_stage_streaming():
     categories_config = _load_categories()
     
     # Process modules in parallel batches for better performance
-    max_workers = 10  # Process 10 modules concurrently
+    max_workers = 50  # Process 50 modules concurrently
     completed = 0
     
     def process_module(family_name):
