@@ -80,6 +80,11 @@
                             </div>
                         </div>
                     </div>
+                    <div id="descriptionsLoadingAlert" class="alert alert-info alert-dismissible fade show d-none mt-2 mb-0" role="alert">
+                        <i class="fas fa-spinner fa-spin me-2"></i>
+                        <span id="descriptionsLoadingText">Loading descriptions...</span>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
                 </div>
                 <div class="card-body p-0">
                     <div class="table-responsive">
@@ -286,6 +291,46 @@
                                 
                                 // Apply current filters
                                 applyFilters();
+                            } else if (data.type === 'descriptions_start') {
+                                // Show descriptions loading alert
+                                const descriptionsAlert = document.getElementById('descriptionsLoadingAlert');
+                                if (descriptionsAlert) {
+                                    descriptionsAlert.classList.remove('d-none');
+                                }
+                            } else if (data.type === 'module_update') {
+                                // Update description for a specific module
+                                const moduleName = data.module_name;
+                                const description = data.description || '';
+                                
+                                // Find the row for this module and update description
+                                if (tbody) {
+                                    const rows = tbody.querySelectorAll('tr.module-row');
+                                    rows.forEach(row => {
+                                        const nameCell = row.querySelector('td:first-child code');
+                                        if (nameCell && nameCell.textContent.trim() === moduleName) {
+                                            const descCell = row.querySelector('td:nth-child(2)');
+                                            if (descCell) {
+                                                if (description) {
+                                                    descCell.innerHTML = '<small class="text-muted">' + escapeHtml(description) + '</small>';
+                                                } else {
+                                                    descCell.innerHTML = '<span class="text-muted">-</span>';
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                                
+                                // Also update in allModules array
+                                const moduleIndex = allModules.findIndex(m => m.name === moduleName);
+                                if (moduleIndex !== -1) {
+                                    allModules[moduleIndex].description = description;
+                                }
+                            } else if (data.type === 'descriptions_complete') {
+                                // Hide descriptions loading alert
+                                const descriptionsAlert = document.getElementById('descriptionsLoadingAlert');
+                                if (descriptionsAlert) {
+                                    descriptionsAlert.classList.add('d-none');
+                                }
                             } else if (data.type === 'complete') {
                                 // Refresh complete
                                 eventSource.close();
@@ -741,6 +786,46 @@
                                 
                                 // Apply current filters
                                 applyFilters();
+                            } else if (data.type === 'descriptions_start') {
+                                // Show descriptions loading alert
+                                const descriptionsAlert = document.getElementById('descriptionsLoadingAlert');
+                                if (descriptionsAlert) {
+                                    descriptionsAlert.classList.remove('d-none');
+                                }
+                            } else if (data.type === 'module_update') {
+                                // Update description for a specific module
+                                const moduleName = data.module_name;
+                                const description = data.description || '';
+                                
+                                // Find the row for this module and update description
+                                if (tbody) {
+                                    const rows = tbody.querySelectorAll('tr.module-row');
+                                    rows.forEach(row => {
+                                        const nameCell = row.querySelector('td:first-child code');
+                                        if (nameCell && nameCell.textContent.trim() === moduleName) {
+                                            const descCell = row.querySelector('td:nth-child(2)');
+                                            if (descCell) {
+                                                if (description) {
+                                                    descCell.innerHTML = '<small class="text-muted">' + escapeHtml(description) + '</small>';
+                                                } else {
+                                                    descCell.innerHTML = '<span class="text-muted">-</span>';
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                                
+                                // Also update in allModules array
+                                const moduleIndex = allModules.findIndex(m => m.name === moduleName);
+                                if (moduleIndex !== -1) {
+                                    allModules[moduleIndex].description = description;
+                                }
+                            } else if (data.type === 'descriptions_complete') {
+                                // Hide descriptions loading alert
+                                const descriptionsAlert = document.getElementById('descriptionsLoadingAlert');
+                                if (descriptionsAlert) {
+                                    descriptionsAlert.classList.add('d-none');
+                                }
                             } else if (data.type === 'complete') {
                                 // Refresh complete
                                 eventSource.close();

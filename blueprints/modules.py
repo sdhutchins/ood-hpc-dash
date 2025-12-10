@@ -292,67 +292,140 @@ def _get_module_details(module_name: str) -> Tuple[Optional[Dict[str, Any]], Opt
     }, None
 
 
+def _parse_module_spider_output(output: str) -> Dict[str, List[str]]:
+    """
+    Parse 'module -t spider' output to extract all modules with versions.
+    
+    Returns:
+        Dict mapping module family names to lists of full module/version strings
+    """
+    modules_dict = {}
+    for line in output.split('\n'):
+        line = line.strip()
+        # Skip empty lines and lines ending with '/' (directories)
+        if not line or line.endswith('/'):
+            continue
+        
+        # If line contains '/', it's a full module/version
+        if '/' in line:
+            parts = line.split('/')
+            if len(parts) >= 2:
+                # Determine family name
+                if len(parts) > 2:
+                    family_name = '/'.join(parts[:-1])
+                else:
+                    family_name = parts[0]
+                
+                if family_name not in modules_dict:
+                    modules_dict[family_name] = []
+                modules_dict[family_name].append(line)
+        else:
+            # No '/', treat as family name with no versions yet
+            if line not in modules_dict:
+                modules_dict[line] = []
+    
+    return modules_dict
+
+
 def _get_all_modules_two_stage_streaming():
     """
     Generator that yields modules as they're discovered (for streaming).
     
+    Strategy:
+    1. Get all modules and versions from 'module -t spider' immediately
+    2. Display them in table right away (without descriptions)
+    3. Then fetch descriptions in background and update as they arrive
+    
     Yields:
-        Dict with 'type' ('progress', 'module', 'complete', 'error') and relevant data
+        Dict with 'type' ('progress', 'module', 'module_update', 'complete', 'error') and relevant data
     """
-    # Step 1: Get all module family names
+    # Step 1: Get all modules and versions from 'module -t spider'
     try:
-        families, error = _get_module_families()
+        yield {'type': 'progress', 'message': 'Fetching module list...', 'total': 0, 'current': 0}
+        
+        output, error = _call_module_command('module -t spider', timeout=60)
         if error:
-            logger.error(f"Error getting module families during refresh: {error}")
+            logger.error(f"Error calling module -t spider: {error}")
             yield {'type': 'error', 'message': f'Failed to get module list: {error}'}
             return
         
-        if not families:
-            logger.error("No module families found during refresh")
-            yield {'type': 'error', 'message': 'No module families found'}
+        if not output or not output.strip():
+            logger.error("module -t spider returned empty output")
+            yield {'type': 'error', 'message': 'module -t spider returned empty output'}
             return
     except Exception as e:
-        logger.error(f"Exception getting module families: {e}", exc_info=True)
+        logger.error(f"Exception getting module list: {e}", exc_info=True)
         yield {'type': 'error', 'message': f'Exception: {str(e)}'}
         return
     
+    # Parse all modules and versions immediately
+    modules_dict = _parse_module_spider_output(output)
+    families = sorted(modules_dict.keys())
     total_families = len(families)
-    yield {'type': 'progress', 'message': f'Found {total_families} module families', 'total': total_families, 'current': 0}
     
-    # Step 2: Get details for each module family (with parallel processing)
-    modules_data = {}
-    failed_count = 0
+    yield {'type': 'progress', 'message': f'Found {total_families} module families with versions', 'total': total_families, 'current': 0}
+    yield {'type': 'descriptions_start', 'message': 'Loading descriptions...'}
+    
+    # Step 2: Display all modules immediately (without descriptions)
     categories_config = _load_categories()
+    for family_name in families:
+        versions = sorted(modules_dict[family_name], key=_natural_sort_key)
+        
+        # Determine base name from first version
+        if versions:
+            first_version = versions[0]
+            if '/' in first_version:
+                parts = first_version.split('/')
+                if len(parts) > 2:
+                    base_name = '/'.join(parts[:-1])
+                else:
+                    base_name = parts[0]
+            else:
+                base_name = family_name
+        else:
+            base_name = family_name
+        
+        category = _categorize_module(base_name, categories_config)
+        
+        # Yield module immediately without description
+        grouped_module = {
+            'name': base_name,
+            'versions': versions,
+            'description': '',  # Empty initially
+            'category': category
+        }
+        yield {'type': 'module', 'module': grouped_module}
     
-    # Process modules in parallel batches for better performance
-    # Reduced from 50 to 20 to prevent resource exhaustion and hanging
+    yield {'type': 'progress', 'message': f'Displayed {total_families} modules, loading descriptions...', 'total': total_families, 'current': 0}
+    
+    # Step 3: Fetch descriptions in background and update modules
+    failed_count = 0
     max_workers = 20  # Process 20 modules concurrently
     completed = 0
     
-    def process_module(family_name):
-        """Process a single module and return result."""
+    def fetch_description(family_name):
+        """Fetch description for a single module family."""
         try:
             details, error = _get_module_details(family_name)
             if error is not None:
                 return None, f"Error: {error}", family_name
             if details is None:
                 return None, None, family_name  # Skipped
-            return details, None, family_name
+            return details.get('description', ''), None, family_name
         except Exception as e:
-            logger.error(f"Exception getting details for {family_name}: {e}", exc_info=True)
+            logger.error(f"Exception getting description for {family_name}: {e}", exc_info=True)
             return None, f"Exception: {str(e)}", family_name
     
-    # Use ThreadPoolExecutor for parallel processing
-    # Process in batches to avoid overwhelming the system
-    batch_size = max_workers * 2  # Process 2x workers worth at a time
+    # Use ThreadPoolExecutor for parallel processing of descriptions
+    batch_size = max_workers * 2
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Process families in batches to avoid submitting all at once
+        # Process families in batches
         for batch_start in range(0, len(families), batch_size):
             batch_end = min(batch_start + batch_size, len(families))
             batch_families = families[batch_start:batch_end]
             
             # Submit batch of tasks
-            future_to_family = {executor.submit(process_module, family_name): family_name 
+            future_to_family = {executor.submit(fetch_description, family_name): family_name 
                                for family_name in batch_families}
             
             # Process completed tasks as they finish
@@ -361,30 +434,22 @@ def _get_all_modules_two_stage_streaming():
                 completed += 1
                 
                 # Yield progress update
-                yield {'type': 'progress', 'message': f'Processing {family_name}', 'total': total_families, 'current': completed}
+                yield {'type': 'progress', 'message': f'Loading descriptions: {family_name}', 'total': total_families, 'current': completed}
                 
                 try:
-                    details, error, _ = future.result()
+                    description, error, _ = future.result()
                     
                     if error is not None and error.startswith('Error:'):
-                        logger.warning(f"Failed to get details for {family_name}: {error}")
+                        logger.warning(f"Failed to get description for {family_name}: {error}")
                         failed_count += 1
                         continue
                     
-                    if details is None:
-                        continue
+                    if description is None:
+                        description = ''  # Use empty string if skipped
                     
-                    if details and details.get('versions'):
-                        modules_data[family_name] = {
-                            'versions': details['versions'],
-                            'description': details.get('description', '')
-                        }
-                        
-                        # Group and yield this module immediately
-                        versions = details['versions']
-                        description = details.get('description', '')
-                        
-                        # Determine base name from first version
+                    # Determine base name for update
+                    versions = modules_dict.get(family_name, [])
+                    if versions:
                         first_version = versions[0]
                         if '/' in first_version:
                             parts = first_version.split('/')
@@ -394,31 +459,25 @@ def _get_all_modules_two_stage_streaming():
                                 base_name = parts[0]
                         else:
                             base_name = family_name
-                        
-                        category = _categorize_module(base_name, categories_config)
-                        sorted_versions = sorted(versions, key=_natural_sort_key) if versions else []
-                        
-                        grouped_module = {
-                            'name': base_name,
-                            'versions': sorted_versions,
-                            'description': description,
-                            'category': category
-                        }
-                        
-                        yield {'type': 'module', 'module': grouped_module}
+                    else:
+                        base_name = family_name
+                    
+                    # Yield description update
+                    yield {'type': 'module_update', 'module_name': base_name, 'description': description}
                 except Exception as e:
-                    logger.error(f"Error processing result for {family_name}: {e}", exc_info=True)
+                    logger.error(f"Error processing description for {family_name}: {e}", exc_info=True)
                     failed_count += 1
                 
-                # Small delay every 10 modules to prevent overwhelming the system
+                # Small delay every 10 modules
                 if completed % 10 == 0 and completed > 0:
                     time.sleep(0.1)
     
     if failed_count > 0:
-        yield {'type': 'progress', 'message': f'Failed to get details for {failed_count} modules', 'total': total_families, 'current': total_families}
+        yield {'type': 'progress', 'message': f'Failed to get descriptions for {failed_count} modules', 'total': total_families, 'current': total_families}
     
-    total_versions = sum(len(data['versions']) for data in modules_data.values())
-    yield {'type': 'complete', 'message': f'Retrieved {total_versions} module versions across {len(modules_data)} modules', 'total_modules': len(modules_data)}
+    yield {'type': 'descriptions_complete', 'message': 'All descriptions loaded'}
+    total_versions = sum(len(versions) for versions in modules_dict.values())
+    yield {'type': 'complete', 'message': f'Retrieved {total_versions} module versions across {len(modules_dict)} modules', 'total_modules': len(modules_dict)}
 
 
 def _get_all_modules_two_stage() -> Tuple[Optional[Dict[str, Dict[str, Any]]], Optional[str]]:
