@@ -1,13 +1,15 @@
 # Standard library imports
 import json
 import logging
+import os
 import re
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # Third-party imports
-from flask import Blueprint, render_template
+from flask import Blueprint, jsonify, render_template
 
 jobs_bp = Blueprint('jobs', __name__, url_prefix='/jobs')
 logger = logging.getLogger(__name__.capitalize())
@@ -15,6 +17,86 @@ logger = logging.getLogger(__name__.capitalize())
 PARTITIONS_FILE = Path('logs/partitions.txt')
 SLURM_LOAD_FILE = Path('logs/slurm_load.txt')
 PARTITION_METADATA_FILE = Path('config/partition_metadata.json')
+
+# Common absolute paths for SLURM binaries
+SINFO_PATHS = [
+    '/cm/shared/apps/slurm/18.08.9/bin/sinfo',
+    '/usr/bin/sinfo',
+    '/opt/slurm/bin/sinfo',
+    '/usr/local/bin/sinfo',
+]
+SQUEUE_PATHS = [
+    '/cm/shared/apps/slurm/18.08.9/bin/squeue',
+    '/usr/bin/squeue',
+    '/opt/slurm/bin/squeue',
+    '/usr/local/bin/squeue',
+]
+
+
+def _find_binary(paths: List[str]) -> Optional[str]:
+    """Find first existing binary from list of absolute paths."""
+    for path in paths:
+        if os.path.exists(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def _call_sinfo() -> Tuple[Optional[str], Optional[str]]:
+    """
+    Call sinfo -s with absolute path and explicit environment.
+    
+    Returns:
+        Tuple of (output, error_message)
+    """
+    sinfo_path = _find_binary(SINFO_PATHS)
+    if not sinfo_path:
+        return None, "sinfo binary not found in standard locations"
+    
+    try:
+        result = subprocess.run(
+            [sinfo_path, '-s'],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={'PATH': '/usr/bin:/bin'},
+            cwd=Path.cwd(),
+        )
+        if result.returncode == 0:
+            return result.stdout, None
+        return None, f"sinfo failed: {result.stderr}"
+    except subprocess.TimeoutExpired:
+        return None, "sinfo command timed out"
+    except Exception as e:
+        return None, f"Error calling sinfo: {str(e)}"
+
+
+def _call_squeue() -> Tuple[Optional[str], Optional[str]]:
+    """
+    Call squeue with absolute path and explicit environment.
+    
+    Returns:
+        Tuple of (output, error_message)
+    """
+    squeue_path = _find_binary(SQUEUE_PATHS)
+    if not squeue_path:
+        return None, "squeue binary not found in standard locations"
+    
+    try:
+        result = subprocess.run(
+            [squeue_path, '--Format=JobID,Name,State,Partition,TimeUsed,TimeLimit'],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={'PATH': '/usr/bin:/bin'},
+            cwd=Path.cwd(),
+        )
+        if result.returncode == 0:
+            return result.stdout, None
+        return None, f"squeue failed: {result.stderr}"
+    except subprocess.TimeoutExpired:
+        return None, "squeue command timed out"
+    except Exception as e:
+        return None, f"Error calling squeue: {str(e)}"
 
 
 def _load_partition_metadata() -> Dict[str, Any]:
@@ -102,35 +184,26 @@ def _parse_sinfo_output(output: str) -> List[Dict[str, Any]]:
 
 def _get_partition_info() -> Tuple[Optional[List[Dict]], Optional[str]]:
     """
-    Read partition data from file (updated by background script).
+    Get partition data by calling sinfo directly.
     
     Returns:
         Tuple of (partitions_list, error_message)
     """
-    if not PARTITIONS_FILE.exists():
-        return None, "Partition data not available. Please wait for data to be collected."
+    output, error = _call_sinfo()
+    if error:
+        logger.warning(f"Error calling sinfo: {error}")
+        return None, error
+    
+    if not output or not output.strip():
+        return None, "sinfo returned empty output"
     
     try:
-        # Check if file is stale (older than 10 minutes)
-        file_age = time.time() - PARTITIONS_FILE.stat().st_mtime
-        if file_age > 600:  # 10 minutes
-            return None, "Partition data is stale. Please refresh the page."
-        
-        # Read and parse the file
-        with PARTITIONS_FILE.open('r', encoding='utf-8') as f:
-            content = f.read()
-        
-        if not content.strip():
-            return None, "Partition data file is empty."
-        
-        partitions = _parse_sinfo_output(content)
+        partitions = _parse_sinfo_output(output)
         if not partitions:
-            return None, "No partition data found in file."
-        
+            return None, "No partition data found in sinfo output."
         return partitions, None
-        
     except Exception as e:
-        error_msg = f"Error reading partition data: {str(e)}"
+        error_msg = f"Error parsing sinfo output: {str(e)}"
         logger.warning(error_msg, exc_info=True)
         return None, error_msg
 
@@ -293,3 +366,81 @@ def jobs():
         partition_reference=partition_reference,
         error=error,
     )
+
+
+@jobs_bp.route('/status')
+def jobs_status():
+    """
+    Return JSON with job status from squeue.
+    
+    Returns:
+        JSON response with running/pending jobs and partition utilization.
+    """
+    output, error = _call_squeue()
+    if error:
+        return jsonify({'error': error}), 500
+    
+    if not output:
+        return jsonify({'error': 'squeue returned empty output'}), 500
+    
+    # Parse squeue output
+    lines = output.strip().split('\n')
+    if len(lines) < 2:
+        return jsonify({
+            'jobs': [],
+            'running': 0,
+            'pending': 0,
+        })
+    
+    jobs = []
+    running = 0
+    pending = 0
+    
+    # Skip header line
+    for line in lines[1:]:
+        line = line.strip()
+        if not line:
+            continue
+        
+        parts = line.split()
+        if len(parts) < 6:
+            continue
+        
+        job_id = parts[0]
+        name = parts[1]
+        state = parts[2]
+        partition = parts[3]
+        time_used = parts[4]
+        time_limit = parts[5] if len(parts) > 5 else 'N/A'
+        
+        jobs.append({
+            'id': job_id,
+            'name': name,
+            'state': state,
+            'partition': partition,
+            'time_used': time_used,
+            'time_limit': time_limit,
+        })
+        
+        if state in ('RUNNING', 'R'):
+            running += 1
+        elif state in ('PENDING', 'PD'):
+            pending += 1
+    
+    # Get partition info for utilization
+    partitions, _ = _get_partition_info()
+    partition_util = {}
+    if partitions:
+        for p in partitions:
+            partition_util[p['name']] = {
+                'allocated': p['allocated'],
+                'idle': p['idle'],
+                'total': p['total'],
+            }
+    
+    return jsonify({
+        'jobs': jobs,
+        'running': running,
+        'pending': pending,
+        'partitions': partition_util,
+    })
