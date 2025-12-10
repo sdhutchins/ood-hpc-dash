@@ -19,7 +19,10 @@
 <body>
   <nav class="navbar navbar-expand-lg" style="background-color: {{ navbar_color or '#e3f2fd' }}" data-bs-theme="light">
     <div class="container-fluid">
-      <a class="navbar-brand" href="{{ url_for('index') }}">HPC Dashboard</a>
+      <a class="navbar-brand d-flex align-items-center" href="{{ url_for('index') }}">
+        <img src="{{ url_for('static', filename='logo.png') }}" alt="HPC Dashboard" height="40" class="me-2" style="max-height: 40px;">
+        <span>HPC Dashboard</span>
+      </a>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
         <span class="navbar-toggler-icon"></span>
       </button>
