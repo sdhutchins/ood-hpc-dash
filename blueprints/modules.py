@@ -601,7 +601,7 @@ def _group_modules_by_name(modules_data: Dict[str, Dict[str, Any]]):
 
 def _get_cached_modules() -> List[Dict[str, Any]]:
     """Get modules from cache or fetch if cache is empty."""
-    global _modules_cache
+    global _modules_cache, _modules_cache_timestamp
     
     if _modules_cache is not None:
         return _modules_cache
@@ -625,7 +625,6 @@ def _get_cached_modules() -> List[Dict[str, Any]]:
             modules_data = {}
     
     grouped_modules = _group_modules_by_name(modules_data) if modules_data else []
-    global _modules_cache, _modules_cache_timestamp
     _modules_cache = grouped_modules
     _modules_cache_timestamp = time.time()
     return grouped_modules
