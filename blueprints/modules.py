@@ -6,6 +6,7 @@ import re
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -23,8 +24,9 @@ logger = logging.getLogger(__name__)
 MODULES_FILE = Path('logs/modules.txt')
 CATEGORIES_FILE = Path('config/module_categories.json')
 
-# Module cache (stores grouped modules data)
+# Module cache (stores grouped modules data and timestamp)
 _modules_cache: Optional[List[Dict[str, Any]]] = None
+_modules_cache_timestamp: Optional[float] = None
 
 # Streaming state
 _streaming_lock = threading.Lock()
@@ -623,14 +625,29 @@ def _get_cached_modules() -> List[Dict[str, Any]]:
             modules_data = {}
     
     grouped_modules = _group_modules_by_name(modules_data) if modules_data else []
+    global _modules_cache, _modules_cache_timestamp
     _modules_cache = grouped_modules
+    _modules_cache_timestamp = time.time()
     return grouped_modules
 
 
 def _clear_modules_cache():
     """Clear the modules cache."""
-    global _modules_cache
+    global _modules_cache, _modules_cache_timestamp
     _modules_cache = None
+    _modules_cache_timestamp = None
+
+
+@modules_bp.app_template_filter('timestamp_to_datetime')
+def timestamp_to_datetime_filter(timestamp: Optional[float]) -> str:
+    """Convert Unix timestamp to formatted datetime string."""
+    if not timestamp:
+        return 'Unknown'
+    try:
+        dt = datetime.fromtimestamp(float(timestamp))
+        return dt.strftime('%Y-%m-%d %H:%M:%S')
+    except (ValueError, OSError):
+        return 'Unknown'
 
 
 # Route for the modules page
@@ -655,13 +672,17 @@ def modules():
         category_order.remove('Misc')
         category_order.append('Misc')
     
+    # Get cache timestamp
+    cache_timestamp = _modules_cache_timestamp if _modules_cache_timestamp else None
+    
     return render_template(
         'modules.html',
         modules=grouped_modules,
         modules_by_category=modules_by_category,
         category_order=category_order,
         unique_count=unique_count,
-        cache_empty=_modules_cache is None
+        cache_empty=_modules_cache is None,
+        cache_timestamp=cache_timestamp
     )
 
 @modules_bp.route('/list')
@@ -727,8 +748,9 @@ def refresh_modules():
                     yield f"data: {json.dumps(event)}\n\n"
                 elif event['type'] == 'complete':
                     # Update cache with all collected modules
-                    global _modules_cache
+                    global _modules_cache, _modules_cache_timestamp
                     _modules_cache = sorted(all_modules, key=lambda m: m['name'].lower())
+                    _modules_cache_timestamp = time.time()
                     # Send completion
                     yield f"data: {json.dumps(event)}\n\n"
                 elif event['type'] == 'error':

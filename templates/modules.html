@@ -51,11 +51,34 @@
         <div id="modulesCard" class="{% if not modules or modules|length == 0 %}d-none{% endif %}">
             <div class="card shadow-sm">
                 <div class="card-header" style="background-color: var(--theme-bg-color);">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Available Modules</h5>
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <div>
+                            <h5 class="mb-0">Available Modules</h5>
+                            {% if cache_timestamp %}
+                            <small class="text-muted d-block" id="cacheTimestamp">
+                                Last updated: <span id="cacheTimestampValue">{{ cache_timestamp|timestamp_to_datetime }}</span>
+                            </small>
+                            {% endif %}
+                        </div>
                         <button type="button" class="btn btn-sm" id="refreshModulesBtn" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);" title="Refresh module list">
                             <i class="fas fa-sync-alt me-1"></i><span>Refresh</span>
                         </button>
+                    </div>
+                    <div id="progressBarContainer" class="d-none">
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+                            <small class="text-muted" id="progressText">Loading modules...</small>
+                            <small class="text-muted" id="progressCount">0/0</small>
+                        </div>
+                        <div class="progress" style="height: 8px;">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                 role="progressbar" 
+                                 id="progressBar"
+                                 style="width: 0%"
+                                 aria-valuenow="0" 
+                                 aria-valuemin="0" 
+                                 aria-valuemax="100">
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div class="card-body p-0">
@@ -140,106 +163,181 @@
             }
             allModules = [];
             
-            // Start refresh process
-            fetch('{{ url_for("modules.refresh_start") }}', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
+                // Show progress bar
+                const progressBarContainer = document.getElementById('progressBarContainer');
+                if (progressBarContainer) {
+                    progressBarContainer.classList.remove('d-none');
                 }
-            })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error('Failed to start refresh');
+                const progressBar = document.getElementById('progressBar');
+                if (progressBar) {
+                    progressBar.style.width = '0%';
+                    progressBar.setAttribute('aria-valuenow', 0);
                 }
                 
-                // Create EventSource for streaming (GET endpoint)
-                const eventSource = new EventSource('{{ url_for("modules.refresh_modules") }}');
-                
-                let moduleCount = 0;
-                const collectedModules = [];
-                
-                eventSource.onmessage = function(event) {
-                    try {
-                        const data = JSON.parse(event.data);
-                        
-                        if (data.type === 'progress') {
-                            // Update loading message
-                            const loadingMessage = document.getElementById('loadingMessage');
-                            if (loadingMessage) {
-                                if (data.current !== undefined && data.total !== undefined) {
-                                    loadingMessage.textContent = `${data.message || 'Loading modules'} (${data.current}/${data.total})`;
-                                } else {
-                                    loadingMessage.textContent = data.message || 'Loading modules...';
-                                }
-                            }
-                            console.log(data.message);
-                        } else if (data.type === 'module') {
-                            // Show table when first module arrives
-                            if (moduleCount === 0) {
-                                document.getElementById('loadingCard').classList.add('d-none');
-                                document.getElementById('modulesCard').classList.remove('d-none');
-                            }
+                // Start refresh process
+                fetch('{{ url_for("modules.refresh_start") }}', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Failed to start refresh');
+                    }
+                    
+                    // Create EventSource for streaming (GET endpoint)
+                    const eventSource = new EventSource('{{ url_for("modules.refresh_modules") }}');
+                    
+                    let moduleCount = 0;
+                    const collectedModules = [];
+                    
+                    eventSource.onmessage = function(event) {
+                        try {
+                            const data = JSON.parse(event.data);
                             
-                            // Add module to collection and display immediately
-                            collectedModules.push(data.module);
-                            allModules.push(data.module);
-                            moduleCount++;
-                            
-                            // Add module row to table immediately
-                            if (tbody) {
-                                const row = document.createElement('tr');
-                                row.className = 'module-row';
-                                row.setAttribute('data-category', data.module.category || 'Misc');
-                                
-                                const nameCell = document.createElement('td');
-                                nameCell.innerHTML = '<code>' + escapeHtml(data.module.name) + '</code>';
-                                
-                                const descCell = document.createElement('td');
-                                if (data.module.description) {
-                                    descCell.innerHTML = '<small class="text-muted">' + escapeHtml(data.module.description) + '</small>';
-                                } else {
-                                    descCell.innerHTML = '<span class="text-muted">-</span>';
+                            if (data.type === 'progress') {
+                                // Update progress bar
+                                if (data.total && data.current !== undefined) {
+                                    const percentage = Math.round((data.current / data.total) * 100);
+                                    if (progressBar) {
+                                        progressBar.style.width = percentage + '%';
+                                        progressBar.setAttribute('aria-valuenow', percentage);
+                                    }
+                                    const progressCount = document.getElementById('progressCount');
+                                    if (progressCount) {
+                                        progressCount.textContent = `${data.current}/${data.total}`;
+                                    }
                                 }
                                 
-                                const versionsCell = document.createElement('td');
-                                if (data.module.versions && data.module.versions.length > 0) {
-                                    versionsCell.innerHTML = data.module.versions.map(v => 
-                                        '<button type="button" class="btn btn-sm copy-version me-1 mb-1" data-version="' + escapeHtml(v) + '" title="Click to copy: module load ' + escapeHtml(v) + '" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);"><i class="fa-regular fa-copy me-1"></i><code class="text-reset">' + escapeHtml(v) + '</code></button>'
-                                    ).join('');
-                                } else {
-                                    versionsCell.innerHTML = '<span class="text-muted">-</span>';
+                                const progressText = document.getElementById('progressText');
+                                if (progressText && data.message) {
+                                    progressText.textContent = data.message;
                                 }
                                 
-                                row.appendChild(nameCell);
-                                row.appendChild(descCell);
-                                row.appendChild(versionsCell);
-                                tbody.appendChild(row);
+                                // Update loading message
+                                const loadingMessage = document.getElementById('loadingMessage');
+                                if (loadingMessage) {
+                                    if (data.current !== undefined && data.total !== undefined) {
+                                        loadingMessage.textContent = `${data.message || 'Loading modules'} (${data.current}/${data.total})`;
+                                    } else {
+                                        loadingMessage.textContent = data.message || 'Loading modules...';
+                                    }
+                                }
+                                console.log(data.message);
+                            } else if (data.type === 'module') {
+                                // Show table when first module arrives
+                                if (moduleCount === 0) {
+                                    document.getElementById('loadingCard').classList.add('d-none');
+                                    document.getElementById('modulesCard').classList.remove('d-none');
+                                }
+                            
+                                // Add module to collection
+                                collectedModules.push(data.module);
+                                allModules.push(data.module);
+                                moduleCount++;
                                 
-                                // Wire up copy handlers for new buttons
-                                attachCopyHandlers();
-                            }
-                            
-                            // Update count
-                            const countEl = document.getElementById('uniqueCount');
-                            if (countEl) {
-                                countEl.textContent = moduleCount;
-                            }
-                            
-                            // Apply current filters
-                            applyFilters();
-                        } else if (data.type === 'complete') {
-                            // Refresh complete
-                            eventSource.close();
-                            
-                            // Update category filter with all collected modules
-                            const categories = new Set();
-                            collectedModules.forEach(m => categories.add(m.category));
-                            populateCategoryFilter(Array.from(categories).sort());
-                            
-                            console.log(data.message);
+                                // Sort all modules alphabetically by name
+                                allModules.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+                                
+                                // Rebuild table with sorted modules
+                                if (tbody) {
+                                    tbody.innerHTML = '';
+                                    
+                                    allModules.forEach(module => {
+                                        const row = document.createElement('tr');
+                                        row.className = 'module-row';
+                                        row.setAttribute('data-category', module.category || 'Misc');
+                                        
+                                        const nameCell = document.createElement('td');
+                                        nameCell.innerHTML = '<code>' + escapeHtml(module.name) + '</code>';
+                                        
+                                        const descCell = document.createElement('td');
+                                        if (module.description) {
+                                            descCell.innerHTML = '<small class="text-muted">' + escapeHtml(module.description) + '</small>';
+                                        } else {
+                                            descCell.innerHTML = '<span class="text-muted">-</span>';
+                                        }
+                                        
+                                        const versionsCell = document.createElement('td');
+                                        if (module.versions && module.versions.length > 0) {
+                                            versionsCell.innerHTML = module.versions.map(v => 
+                                                '<button type="button" class="btn btn-sm copy-version me-1 mb-1" data-version="' + escapeHtml(v) + '" title="Click to copy: module load ' + escapeHtml(v) + '" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);"><i class="fa-regular fa-copy me-1"></i><code class="text-reset">' + escapeHtml(v) + '</code></button>'
+                                            ).join('');
+                                        } else {
+                                            versionsCell.innerHTML = '<span class="text-muted">-</span>';
+                                        }
+                                        
+                                        row.appendChild(nameCell);
+                                        row.appendChild(descCell);
+                                        row.appendChild(versionsCell);
+                                        tbody.appendChild(row);
+                                    });
+                                    
+                                    // Wire up copy handlers for all buttons
+                                    attachCopyHandlers();
+                                }
+                                
+                                // Update count
+                                const countEl = document.getElementById('uniqueCount');
+                                if (countEl) {
+                                    countEl.textContent = moduleCount;
+                                }
+                                
+                                // Apply current filters
+                                applyFilters();
+                            } else if (data.type === 'complete') {
+                                // Refresh complete
+                                eventSource.close();
+                                
+                                // Hide progress bar
+                                const progressBarContainer = document.getElementById('progressBarContainer');
+                                if (progressBarContainer) {
+                                    progressBarContainer.classList.add('d-none');
+                                }
+                                
+                                // Set progress bar to 100%
+                                const progressBar = document.getElementById('progressBar');
+                                if (progressBar) {
+                                    progressBar.style.width = '100%';
+                                    progressBar.setAttribute('aria-valuenow', 100);
+                                }
+                                
+                                // Update category filter with all collected modules
+                                const categories = new Set();
+                                collectedModules.forEach(m => categories.add(m.category));
+                                populateCategoryFilter(Array.from(categories).sort());
+                                
+                                // Update cache timestamp
+                                const cacheTimestampEl = document.getElementById('cacheTimestamp');
+                                const cacheTimestampValueEl = document.getElementById('cacheTimestampValue');
+                                if (cacheTimestampValueEl) {
+                                    const now = new Date();
+                                    const formatted = now.toLocaleString('en-US', {
+                                        year: 'numeric',
+                                        month: '2-digit',
+                                        day: '2-digit',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                        second: '2-digit'
+                                    });
+                                    cacheTimestampValueEl.textContent = formatted;
+                                }
+                                if (cacheTimestampEl) {
+                                    cacheTimestampEl.style.display = '';
+                                }
+                                
+                                console.log(data.message);
                         } else if (data.type === 'error') {
                             // Error occurred
                             eventSource.close();
+                            
+                            // Hide progress bar
+                            const progressBarContainer = document.getElementById('progressBarContainer');
+                            if (progressBarContainer) {
+                                progressBarContainer.classList.add('d-none');
+                            }
+                            
                             alert('Error: ' + data.message);
                             document.getElementById('loadingCard').classList.remove('d-none');
                             document.getElementById('modulesCard').classList.add('d-none');
@@ -252,15 +350,29 @@
                 eventSource.onerror = function(error) {
                     console.error('EventSource error:', error);
                     eventSource.close();
+                    
+                    // Hide progress bar
+                    const progressBarContainer = document.getElementById('progressBarContainer');
+                    if (progressBarContainer) {
+                        progressBarContainer.classList.add('d-none');
+                    }
+                    
                     alert('Connection error while loading modules.');
                     document.getElementById('loadingCard').classList.remove('d-none');
                     document.getElementById('modulesCard').classList.add('d-none');
                 };
             })
-            .catch(error => {
-                console.error('Error starting module stream:', error);
-                alert('Failed to start loading modules. Please try again.');
-            });
+                .catch(error => {
+                    console.error('Error starting module stream:', error);
+                    
+                    // Hide progress bar
+                    const progressBarContainer = document.getElementById('progressBarContainer');
+                    if (progressBarContainer) {
+                        progressBarContainer.classList.add('d-none');
+                    }
+                    
+                    alert('Failed to start loading modules. Please try again.');
+                });
         }
         
         startStreamingModules();
@@ -517,6 +629,17 @@
                     countEl.textContent = '0';
                 }
                 
+                // Show progress bar
+                const progressBarContainer = document.getElementById('progressBarContainer');
+                if (progressBarContainer) {
+                    progressBarContainer.classList.remove('d-none');
+                }
+                const progressBar = document.getElementById('progressBar');
+                if (progressBar) {
+                    progressBar.style.width = '0%';
+                    progressBar.setAttribute('aria-valuenow', 0);
+                }
+                
                 // Start refresh process
                 fetch('{{ url_for("modules.refresh_start") }}', {
                     method: 'POST',
@@ -540,48 +663,74 @@
                             const data = JSON.parse(event.data);
                             
                             if (data.type === 'progress') {
+                                // Update progress bar
+                                if (data.total && data.current !== undefined) {
+                                    const percentage = Math.round((data.current / data.total) * 100);
+                                    const progressBar = document.getElementById('progressBar');
+                                    if (progressBar) {
+                                        progressBar.style.width = percentage + '%';
+                                        progressBar.setAttribute('aria-valuenow', percentage);
+                                    }
+                                    const progressCount = document.getElementById('progressCount');
+                                    if (progressCount) {
+                                        progressCount.textContent = `${data.current}/${data.total}`;
+                                    }
+                                }
+                                
+                                const progressText = document.getElementById('progressText');
+                                if (progressText && data.message) {
+                                    progressText.textContent = data.message;
+                                }
+                                
                                 // Update button text with progress
-                                if (buttonText.textContent !== undefined) {
-                                    buttonText.textContent = `${data.current}/${data.total}`;
+                                if (buttonText) {
+                                    buttonText.textContent = `${data.current || 0}/${data.total || 0}`;
                                 }
                                 console.log(data.message);
                             } else if (data.type === 'module') {
-                                // Add module to collection and display immediately
+                                // Add module to collection
                                 collectedModules.push(data.module);
                                 allModules.push(data.module);
                                 moduleCount++;
                                 
-                                // Add module row to table immediately
+                                // Sort all modules alphabetically by name
+                                allModules.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+                                
+                                // Rebuild table with sorted modules
                                 if (tbody) {
-                                    const row = document.createElement('tr');
-                                    row.className = 'module-row';
-                                    row.setAttribute('data-category', data.module.category || 'Misc');
+                                    tbody.innerHTML = '';
                                     
-                                    const nameCell = document.createElement('td');
-                                    nameCell.innerHTML = '<code>' + escapeHtml(data.module.name) + '</code>';
+                                    allModules.forEach(module => {
+                                        const row = document.createElement('tr');
+                                        row.className = 'module-row';
+                                        row.setAttribute('data-category', module.category || 'Misc');
+                                        
+                                        const nameCell = document.createElement('td');
+                                        nameCell.innerHTML = '<code>' + escapeHtml(module.name) + '</code>';
+                                        
+                                        const descCell = document.createElement('td');
+                                        if (module.description) {
+                                            descCell.innerHTML = '<small class="text-muted">' + escapeHtml(module.description) + '</small>';
+                                        } else {
+                                            descCell.innerHTML = '<span class="text-muted">-</span>';
+                                        }
+                                        
+                                        const versionsCell = document.createElement('td');
+                                        if (module.versions && module.versions.length > 0) {
+                                            versionsCell.innerHTML = module.versions.map(v => 
+                                                '<button type="button" class="btn btn-sm copy-version me-1 mb-1" data-version="' + escapeHtml(v) + '" title="Click to copy: module load ' + escapeHtml(v) + '" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);"><i class="fa-regular fa-copy me-1"></i><code class="text-reset">' + escapeHtml(v) + '</code></button>'
+                                            ).join('');
+                                        } else {
+                                            versionsCell.innerHTML = '<span class="text-muted">-</span>';
+                                        }
+                                        
+                                        row.appendChild(nameCell);
+                                        row.appendChild(descCell);
+                                        row.appendChild(versionsCell);
+                                        tbody.appendChild(row);
+                                    });
                                     
-                                    const descCell = document.createElement('td');
-                                    if (data.module.description) {
-                                        descCell.innerHTML = '<small class="text-muted">' + escapeHtml(data.module.description) + '</small>';
-                                    } else {
-                                        descCell.innerHTML = '<span class="text-muted">-</span>';
-                                    }
-                                    
-                                    const versionsCell = document.createElement('td');
-                                    if (data.module.versions && data.module.versions.length > 0) {
-                                        versionsCell.innerHTML = data.module.versions.map(v => 
-                                            '<button type="button" class="btn btn-sm copy-version me-1 mb-1" data-version="' + escapeHtml(v) + '" title="Click to copy: module load ' + escapeHtml(v) + '" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);"><i class="fa-regular fa-copy me-1"></i><code class="text-reset">' + escapeHtml(v) + '</code></button>'
-                                        ).join('');
-                                    } else {
-                                        versionsCell.innerHTML = '<span class="text-muted">-</span>';
-                                    }
-                                    
-                                    row.appendChild(nameCell);
-                                    row.appendChild(descCell);
-                                    row.appendChild(versionsCell);
-                                    tbody.appendChild(row);
-                                    
-                                    // Wire up copy handlers for new buttons
+                                    // Wire up copy handlers for all buttons
                                     attachCopyHandlers();
                                 }
                                 
@@ -596,14 +745,48 @@
                                 // Refresh complete
                                 eventSource.close();
                                 
+                                // Hide progress bar after a brief delay
+                                setTimeout(() => {
+                                    const progressBarContainer = document.getElementById('progressBarContainer');
+                                    if (progressBarContainer) {
+                                        progressBarContainer.classList.add('d-none');
+                                    }
+                                }, 500);
+                                
+                                // Set progress bar to 100%
+                                const progressBar = document.getElementById('progressBar');
+                                if (progressBar) {
+                                    progressBar.style.width = '100%';
+                                    progressBar.setAttribute('aria-valuenow', 100);
+                                }
+                                
                                 // Update category filter with all collected modules
                                 const categories = new Set();
                                 collectedModules.forEach(m => categories.add(m.category));
                                 populateCategoryFilter(Array.from(categories).sort());
                                 
+                                // Update cache timestamp
+                                const cacheTimestampEl = document.getElementById('cacheTimestamp');
+                                const cacheTimestampValueEl = document.getElementById('cacheTimestampValue');
+                                if (cacheTimestampValueEl) {
+                                    const now = new Date();
+                                    const formatted = now.toLocaleString('en-US', {
+                                        year: 'numeric',
+                                        month: '2-digit',
+                                        day: '2-digit',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                        second: '2-digit'
+                                    });
+                                    cacheTimestampValueEl.textContent = formatted;
+                                }
+                                if (cacheTimestampEl) {
+                                    cacheTimestampEl.style.display = '';
+                                }
+                                
                                 // Restore button state
                                 icon.className = originalClass;
-                                if (buttonText.textContent !== undefined) {
+                                if (buttonText) {
                                     buttonText.textContent = 'Refresh';
                                 }
                                 this.disabled = false;
