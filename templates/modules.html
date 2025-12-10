@@ -49,13 +49,16 @@
             </div>
         </div>
         <div id="modulesCard" class="{% if not modules or modules|length == 0 %}d-none{% endif %}">
-            <div class="card">
-                <div class="card-body">
+            <div class="card shadow-sm">
+                <div class="card-header" style="background-color: var(--theme-bg-color);">
+                    <h5 class="mb-0">Available Modules</h5>
+                </div>
+                <div class="card-body p-0">
                     <div class="table-responsive">
-                        <table class="table table-hover table-sm">
-                            <thead class="table-light">
+                        <table class="table table-hover table-sm mb-0">
+                            <thead style="background-color: var(--theme-bg-color);">
                                 <tr>
-                                    <th scope="col" style="width: 30%;">Name</th>
+                                    <th scope="col">Name</th>
                                     <th scope="col">Versions Available</th>
                                 </tr>
                             </thead>
@@ -67,7 +70,7 @@
                                     <td>
                                         {% if module.versions %}
                                             {% for version in module.versions %}
-                                                <button type="button" class="btn btn-outline-secondary btn-sm copy-version me-1 mb-1" data-version="{{ version }}" title="Click to copy: module load {{ version }}">
+                                                <button type="button" class="btn btn-sm copy-version me-1 mb-1" data-version="{{ version }}" title="Click to copy: module load {{ version }}" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);">
                                                     <i class="fa-regular fa-copy me-1"></i><code class="text-reset">{{ version }}</code>
                                                 </button>
                                             {% endfor %}
@@ -193,7 +196,7 @@
                 const versionsCell = document.createElement('td');
                 if (module.versions && module.versions.length > 0) {
                     versionsCell.innerHTML = module.versions.map(v => 
-                        '<button type="button" class="btn btn-outline-secondary btn-sm copy-version me-1 mb-1" data-version="' + escapeHtml(v) + '" title="Click to copy: module load ' + escapeHtml(v) + '"><i class="fa-regular fa-copy me-1"></i><code class="text-reset">' + escapeHtml(v) + '</code></button>'
+                        '<button type="button" class="btn btn-sm copy-version me-1 mb-1" data-version="' + escapeHtml(v) + '" title="Click to copy: module load ' + escapeHtml(v) + '" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);"><i class="fa-regular fa-copy me-1"></i><code class="text-reset">' + escapeHtml(v) + '</code></button>'
                     ).join('');
                 } else {
                     versionsCell.innerHTML = '<span class="text-muted">-</span>';
@@ -330,11 +333,15 @@
                     copyText(`module load ${version}`)
                         .then(() => {
                             btn.classList.add('btn-success', 'text-white');
-                            btn.classList.remove('btn-outline-secondary');
+                            btn.style.backgroundColor = '';
+                            btn.style.borderColor = '';
+                            btn.style.color = '';
                             btn.innerHTML = '<i class="fa-regular fa-copy me-1"></i>Copied!';
                             setTimeout(() => {
                                 btn.classList.remove('btn-success', 'text-white');
-                                btn.classList.add('btn-outline-secondary');
+                                btn.style.backgroundColor = 'var(--theme-bg-color)';
+                                btn.style.borderColor = 'var(--theme-bg-color)';
+                                btn.style.color = 'var(--theme-text-color)';
                                 btn.innerHTML = originalHtml;
                             }, 1200);
                         })
