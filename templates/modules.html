@@ -51,15 +51,21 @@
         <div id="modulesCard" class="{% if not modules or modules|length == 0 %}d-none{% endif %}">
             <div class="card shadow-sm">
                 <div class="card-header" style="background-color: var(--theme-bg-color);">
-                    <h5 class="mb-0">Available Modules</h5>
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Available Modules</h5>
+                        <button type="button" class="btn btn-sm" id="refreshModulesBtn" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);" title="Refresh module list">
+                            <i class="fas fa-sync-alt me-1"></i>Refresh
+                        </button>
+                    </div>
                 </div>
                 <div class="card-body p-0">
                     <div class="table-responsive">
                         <table class="table table-hover table-sm mb-0">
                             <thead style="background-color: var(--theme-bg-color);">
                                 <tr>
-                                    <th scope="col">Name</th>
-                                    <th scope="col">Versions Available</th>
+                                    <th scope="col">Module</th>
+                                    <th scope="col">Description</th>
+                                    <th scope="col">Versions</th>
                                 </tr>
                             </thead>
                             <tbody id="modulesTableBody">
@@ -67,6 +73,13 @@
                                 {% for module in modules %}
                                 <tr class="module-row" data-category="{{ module.category }}">
                                     <td><code>{{ module.name }}</code></td>
+                                    <td>
+                                        {% if module.description %}
+                                            <small class="text-muted">{{ module.description }}</small>
+                                        {% else %}
+                                            <span class="text-muted">-</span>
+                                        {% endif %}
+                                    </td>
                                     <td>
                                         {% if module.versions %}
                                             {% for version in module.versions %}
@@ -193,6 +206,13 @@
                 const nameCell = document.createElement('td');
                 nameCell.innerHTML = '<code>' + escapeHtml(module.name) + '</code>';
                 
+                const descCell = document.createElement('td');
+                if (module.description) {
+                    descCell.innerHTML = '<small class="text-muted">' + escapeHtml(module.description) + '</small>';
+                } else {
+                    descCell.innerHTML = '<span class="text-muted">-</span>';
+                }
+                
                 const versionsCell = document.createElement('td');
                 if (module.versions && module.versions.length > 0) {
                     versionsCell.innerHTML = module.versions.map(v => 
@@ -203,6 +223,7 @@
                 }
                 
                 row.appendChild(nameCell);
+                row.appendChild(descCell);
                 row.appendChild(versionsCell);
                 tbody.appendChild(row);
             });
@@ -257,10 +278,12 @@
                 // Search filter
                 let searchMatch = true;
                 if (nameRegex || versionRegex) {
-                    const nameCell = row.querySelector('td:first-child');
-                    const versionsCell = row.querySelector('td:last-child');
+                    const nameCell = row.querySelector('td:nth-child(1)');
+                    const descCell = row.querySelector('td:nth-child(2)');
+                    const versionsCell = row.querySelector('td:nth-child(3)');
                     
                     let nameMatch = false;
+                    let descMatch = false;
                     let versionMatch = false;
                     
                     // Check module name
@@ -269,14 +292,20 @@
                         nameMatch = nameRegex.test(moduleName);
                     }
                     
+                    // Check description
+                    if (nameRegex && descCell) {
+                        const descText = descCell.textContent.trim().toLowerCase();
+                        descMatch = nameRegex.test(descText);
+                    }
+                    
                     // Check versions (if search contains numbers or is 3+ characters)
                     if (versionRegex && versionsCell) {
                         const versionsText = versionsCell.textContent.toLowerCase();
                         versionMatch = versionRegex.test(versionsText);
                     }
                     
-                    // Match if either name or version matches
-                    searchMatch = nameMatch || versionMatch;
+                    // Match if name, description, or version matches
+                    searchMatch = nameMatch || descMatch || versionMatch;
                 }
                 
                 // Show row if both filters match
@@ -354,6 +383,53 @@
 
         // Initial wiring for server-rendered modules
         attachCopyHandlers();
+        
+        // Refresh button handler
+        const refreshBtn = document.getElementById('refreshModulesBtn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', function() {
+                const icon = this.querySelector('i');
+                const originalClass = icon.className;
+                
+                // Show loading state
+                icon.className = 'fas fa-spinner fa-spin me-1';
+                this.disabled = true;
+                
+                // Fetch fresh data
+                fetch('{{ url_for("modules.refresh_modules") }}', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    allModules = data.modules;
+                    categoryOrder = data.category_order || [];
+                    const countEl = document.getElementById('uniqueCount');
+                    if (countEl) {
+                        countEl.textContent = data.unique_count || data.modules.length;
+                    }
+                    displayModules(data.modules);
+                    populateCategoryFilter(categoryOrder);
+                    
+                    // Restore button state
+                    icon.className = originalClass;
+                    this.disabled = false;
+                })
+                .catch(error => {
+                    console.error('Error refreshing modules:', error);
+                    alert('Failed to refresh modules. Please try again.');
+                    icon.className = originalClass;
+                    this.disabled = false;
+                });
+            });
+        }
     });
 })();
 </script>

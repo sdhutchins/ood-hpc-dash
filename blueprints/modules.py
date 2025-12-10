@@ -1,8 +1,11 @@
 # Standard library imports
 import json
 import logging
+import os
 import re
+import subprocess
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 # Third-party imports
 from flask import Blueprint, jsonify, render_template
@@ -16,6 +19,204 @@ logger = logging.getLogger(__name__)
 # Path to modules file
 MODULES_FILE = Path('logs/modules.txt')
 CATEGORIES_FILE = Path('config/module_categories.json')
+
+# Module cache (stores grouped modules data)
+_modules_cache: Optional[List[Dict[str, Any]]] = None
+
+# Common absolute paths for bash
+BASH_PATHS = [
+    '/bin/bash',
+    '/usr/bin/bash',
+]
+
+
+def _find_binary(paths: List[str]) -> Optional[str]:
+    """Find first existing binary from list of absolute paths."""
+    for path in paths:
+        if os.path.exists(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def _call_module_command(command: str, timeout: int = 30) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Call a module command using bash -lc with explicit environment.
+    
+    Since module is a shell function, we must use a login shell.
+    
+    Args:
+        command: Module command to run (e.g., 'module -t spider' or 'module --redirect spider zlib')
+        timeout: Timeout in seconds
+    
+    Returns:
+        Tuple of (output, error_message)
+    """
+    bash_path = _find_binary(BASH_PATHS)
+    if not bash_path:
+        return None, "bash binary not found in standard locations"
+    
+    try:
+        result = subprocess.run(
+            [bash_path, '-lc', command],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env={'PATH': '/usr/bin:/bin'},
+            cwd=Path.cwd(),
+        )
+        if result.returncode == 0:
+            return result.stdout, None
+        return None, f"module command failed: {result.stderr}"
+    except subprocess.TimeoutExpired:
+        return None, f"module command timed out after {timeout}s"
+    except Exception as e:
+        return None, f"Error calling module command: {str(e)}"
+
+
+def _get_module_families() -> Tuple[Optional[List[str]], Optional[str]]:
+    """
+    Step 1: Get all module family names using 'module -t spider'.
+    
+    Returns:
+        Tuple of (list of module family names, error_message)
+    """
+    output, error = _call_module_command('module -t spider', timeout=60)
+    if error:
+        return None, error
+    
+    if not output:
+        return None, "module -t spider returned empty output"
+    
+    # Parse output: each line is a module family name
+    families = []
+    for line in output.split('\n'):
+        line = line.strip()
+        # Skip empty lines and lines ending with '/' (these are directories in hierarchical modules)
+        if line and not line.endswith('/'):
+            families.append(line)
+    
+    return families, None
+
+
+def _get_module_details(module_name: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """
+    Step 2: Get full details for a specific module using 'module --redirect spider <name>'.
+    
+    Args:
+        module_name: Module family name (e.g., 'zlib', 'python')
+    
+    Returns:
+        Tuple of (dict with 'versions' list and 'description' string, error_message)
+    """
+    output, error = _call_module_command(f'module --redirect spider {module_name}', timeout=10)
+    if error:
+        return None, error
+    
+    if not output:
+        return None, f"module --redirect spider {module_name} returned empty output"
+    
+    # Parse the detailed output
+    versions = []
+    description_lines = []
+    in_versions_section = False
+    in_description_section = False
+    
+    for line in output.split('\n'):
+        original_line = line
+        line = line.strip()
+        
+        # Skip separator lines
+        if line.startswith('---'):
+            continue
+        
+        # Check for Versions section
+        if 'Versions:' in line:
+            in_versions_section = True
+            in_description_section = False
+            continue
+        
+        # Check for Description section
+        if 'Description:' in line:
+            in_versions_section = False
+            in_description_section = True
+            # Description text may be on the same line after "Description:"
+            desc_part = line.split('Description:', 1)
+            if len(desc_part) > 1 and desc_part[1].strip():
+                description_lines.append(desc_part[1].strip())
+            continue
+        
+        # Check for Dependencies section (end of description)
+        if 'Dependencies:' in line:
+            in_description_section = False
+            in_versions_section = False
+            continue
+        
+        # Collect versions (they appear indented after "Versions:")
+        if in_versions_section and line:
+            # Versions are listed as "module/version" - check if it looks like a version line
+            if '/' in line and not line.startswith('(') and ':' not in line:
+                # This looks like a version entry
+                versions.append(line)
+        
+        # Collect description
+        if in_description_section and line:
+            description_lines.append(line)
+    
+    description = ' '.join(description_lines).strip() if description_lines else ''
+    
+    return {
+        'versions': versions,
+        'description': description
+    }, None
+
+
+def _get_all_modules_two_stage() -> Tuple[Optional[Dict[str, Dict[str, Any]]], Optional[str]]:
+    """
+    Two-stage Lmod spider crawl to get all modules with all versions and descriptions.
+    
+    Step 1: Get all module family names
+    Step 2: For each family, get all versions and description
+    
+    Returns:
+        Tuple of (dict mapping module names to {'versions': [...], 'description': '...'}, error_message)
+    """
+    # Step 1: Get all module family names
+    families, error = _get_module_families()
+    if error:
+        return None, error
+    
+    if not families:
+        return None, "No module families found"
+    
+    logger.info(f"Found {len(families)} module families, fetching details...")
+    
+    # Step 2: Get details for each module family
+    modules_data = {}
+    failed_count = 0
+    
+    for i, family_name in enumerate(families):
+        if i % 50 == 0:
+            logger.info(f"Processing module {i+1}/{len(families)}: {family_name}")
+        
+        details, error = _get_module_details(family_name)
+        if error:
+            logger.warning(f"Failed to get details for {family_name}: {error}")
+            failed_count += 1
+            continue
+        
+        if details and details.get('versions'):
+            modules_data[family_name] = {
+                'versions': details['versions'],
+                'description': details.get('description', '')
+            }
+    
+    if failed_count > 0:
+        logger.warning(f"Failed to get details for {failed_count} out of {len(families)} modules")
+    
+    total_versions = sum(len(data['versions']) for data in modules_data.values())
+    logger.info(f"Retrieved {total_versions} module versions across {len(modules_data)} modules")
+    return modules_data, None
+
 
 def _load_modules_from_file():
     """Load modules from file if it exists and has content."""
@@ -103,62 +304,53 @@ def _categorize_module(module_name, categories_config):
     # Default to Misc for unmatched modules
     return 'Misc'
 
-def _group_modules_by_name(module_lines):
-    """Group modules by base name.
-    
-    Handles both simple modules (e.g., 'Armadillo/11.4.3-foss-2022b') 
-    and hierarchical modules (e.g., 'rc/3DSlicer/5.2.2').
+
+
+def _group_modules_by_name(modules_data: Dict[str, Dict[str, Any]]):
+    """Group modules by base name with descriptions.
     
     Args:
-        module_lines: List of module strings from module -t spider output
+        modules_data: Dict mapping module family names to {'versions': [...], 'description': '...'}
     
     Returns:
         List of dicts with 'name' (base name), 'versions' (list of full names),
-        and 'category' (category name)
+        'description' (description text), and 'category' (category name)
     """
-    grouped = {}
     categories_config = _load_categories()
+    result = []
     
-    for module_line in module_lines:
-        # Skip empty lines
-        if not module_line.strip():
+    for family_name, data in modules_data.items():
+        versions = data.get('versions', [])
+        description = data.get('description', '')
+        
+        if not versions:
             continue
-            
-        # Lines ending with '/' are base names (directories)
-        if module_line.endswith('/'):
-            base_name = module_line.rstrip('/')
-            if base_name not in grouped:
-                grouped[base_name] = []
-        # Lines with '/' have a version component
-        elif '/' in module_line:
-            # For hierarchical modules like 'rc/3DSlicer/5.2.2',
-            # base name is everything except the last segment
-            # For simple modules like 'Armadillo/11.4.3', base is first segment
-            parts = module_line.split('/')
+        
+        # Determine base name from first version
+        # For hierarchical modules like 'rc/3DSlicer/5.2.2',
+        # base name is everything except the last segment
+        # For simple modules like 'Armadillo/11.4.3', base is first segment
+        first_version = versions[0]
+        if '/' in first_version:
+            parts = first_version.split('/')
             if len(parts) > 2:
                 # Hierarchical: rc/3DSlicer/5.2.2 -> base = rc/3DSlicer
                 base_name = '/'.join(parts[:-1])
             else:
                 # Simple: Armadillo/11.4.3 -> base = Armadillo
                 base_name = parts[0]
-            
-            if base_name not in grouped:
-                grouped[base_name] = []
-            grouped[base_name].append(module_line)
         else:
-            # No version, just base name (e.g., 'rc-base', 'shared')
-            if module_line not in grouped:
-                grouped[module_line] = []
-    
-    # Convert to list of dicts with categories
-    result = []
-    for name, versions in grouped.items():
-        category = _categorize_module(name, categories_config)
+            base_name = family_name
+        
+        category = _categorize_module(base_name, categories_config)
+        
         # Sort versions using natural (numeric-aware) sorting
         sorted_versions = sorted(versions, key=_natural_sort_key) if versions else []
+        
         result.append({
-            'name': name,
+            'name': base_name,
             'versions': sorted_versions,
+            'description': description,
             'category': category
         })
     
@@ -167,12 +359,47 @@ def _group_modules_by_name(module_lines):
     
     return result
 
+def _get_cached_modules() -> List[Dict[str, Any]]:
+    """Get modules from cache or fetch if cache is empty."""
+    global _modules_cache
+    
+    if _modules_cache is not None:
+        return _modules_cache
+    
+    # Fetch modules
+    modules_data, error = _get_all_modules_two_stage()
+    if error:
+        logger.warning(f"Error getting modules: {error}, falling back to file")
+        module_lines = _load_modules_from_file()
+        # Convert old format to new format for compatibility
+        if module_lines:
+            modules_data = {}
+            for line in module_lines:
+                if '/' in line:
+                    parts = line.split('/')
+                    base_name = parts[0] if len(parts) == 2 else '/'.join(parts[:-1])
+                    if base_name not in modules_data:
+                        modules_data[base_name] = {'versions': [], 'description': ''}
+                    modules_data[base_name]['versions'].append(line)
+        else:
+            modules_data = {}
+    
+    grouped_modules = _group_modules_by_name(modules_data) if modules_data else []
+    _modules_cache = grouped_modules
+    return grouped_modules
+
+
+def _clear_modules_cache():
+    """Clear the modules cache."""
+    global _modules_cache
+    _modules_cache = None
+
+
 # Route for the modules page
 @modules_bp.route('/')
 def modules():
     """Render the modules page."""
-    module_lines = _load_modules_from_file()
-    grouped_modules = _group_modules_by_name(module_lines) if module_lines else []
+    grouped_modules = _get_cached_modules()
     unique_count = len(grouped_modules)
     
     # Group modules by category for display
@@ -199,31 +426,58 @@ def modules():
 
 @modules_bp.route('/list')
 def modules_list():
-    """Return JSON list of modules."""
-    module_lines = _load_modules_from_file()
-    if module_lines:
-        grouped_modules = _group_modules_by_name(module_lines)
-        unique_count = len(grouped_modules)
-        
-        # Group by category for frontend
-        modules_by_category = {}
-        for module in grouped_modules:
-            cat = module['category']
-            if cat not in modules_by_category:
-                modules_by_category[cat] = []
-            modules_by_category[cat].append(module)
-        
-        # Get category order (sorted, with Misc last)
-        category_order = sorted(modules_by_category.keys())
-        if 'Misc' in category_order:
-            category_order.remove('Misc')
-            category_order.append('Misc')
-        
-        return jsonify({
-            'modules': grouped_modules,
-            'modules_by_category': modules_by_category,
-            'category_order': category_order,
-            'unique_count': unique_count
-        })
-    else:
-        return jsonify({'modules': [], 'unique_count': 0, 'loading': True})
+    """Return JSON list of modules from cache."""
+    grouped_modules = _get_cached_modules()
+    unique_count = len(grouped_modules)
+    
+    # Group by category for frontend
+    modules_by_category = {}
+    for module in grouped_modules:
+        cat = module['category']
+        if cat not in modules_by_category:
+            modules_by_category[cat] = []
+        modules_by_category[cat].append(module)
+    
+    # Get category order (sorted, with Misc last)
+    category_order = sorted(modules_by_category.keys())
+    if 'Misc' in category_order:
+        category_order.remove('Misc')
+        category_order.append('Misc')
+    
+    return jsonify({
+        'modules': grouped_modules,
+        'modules_by_category': modules_by_category,
+        'category_order': category_order,
+        'unique_count': unique_count,
+        'loading': False
+    })
+
+
+@modules_bp.route('/refresh', methods=['POST'])
+def refresh_modules():
+    """Clear cache and fetch fresh module data."""
+    _clear_modules_cache()
+    grouped_modules = _get_cached_modules()
+    unique_count = len(grouped_modules)
+    
+    # Group by category for frontend
+    modules_by_category = {}
+    for module in grouped_modules:
+        cat = module['category']
+        if cat not in modules_by_category:
+            modules_by_category[cat] = []
+        modules_by_category[cat].append(module)
+    
+    # Get category order (sorted, with Misc last)
+    category_order = sorted(modules_by_category.keys())
+    if 'Misc' in category_order:
+        category_order.remove('Misc')
+        category_order.append('Misc')
+    
+    return jsonify({
+        'modules': grouped_modules,
+        'modules_by_category': modules_by_category,
+        'category_order': category_order,
+        'unique_count': unique_count,
+        'loading': False
+    })
