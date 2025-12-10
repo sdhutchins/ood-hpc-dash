@@ -159,13 +159,21 @@ def _get_module_details(module_name: str) -> Tuple[Optional[Dict[str, Any]], Opt
     
     Returns:
         Tuple of (dict with 'versions' list and 'description' string, error_message)
+        Returns (None, None) if module has no output (skip it, not an error)
     """
-    output, error = _call_module_command(f'module --redirect spider {module_name}', timeout=10)
+    output, error = _call_module_command(f'module --redirect spider {module_name}', timeout=15)
     if error:
-        return None, error
+        # For individual modules, empty output is not fatal - just skip it
+        if "empty output" in error.lower():
+            logger.debug(f"Module {module_name} returned empty output - skipping")
+            return None, None
+        # Other errors (timeout, etc.) are logged but we continue
+        logger.debug(f"Module {module_name} error: {error}")
+        return None, None
     
-    if not output:
-        return None, f"module --redirect spider {module_name} returned empty output"
+    if not output or not output.strip():
+        logger.debug(f"Module {module_name} has no output - skipping")
+        return None, None
     
     # Parse the detailed output
     versions = []
@@ -266,9 +274,14 @@ def _get_all_modules_two_stage_streaming():
         yield {'type': 'progress', 'message': f'Processing {family_name}', 'total': total_families, 'current': i + 1}
         
         details, error = _get_module_details(family_name)
-        if error:
+        # If error is None, it means we should skip this module (not a fatal error)
+        if error is not None:
             logger.warning(f"Failed to get details for {family_name}: {error}")
             failed_count += 1
+            continue
+        
+        # If details is None, module was skipped (empty output, etc.)
+        if details is None:
             continue
         
         if details and details.get('versions'):
@@ -340,9 +353,14 @@ def _get_all_modules_two_stage() -> Tuple[Optional[Dict[str, Dict[str, Any]]], O
             logger.info(f"Processing module {i+1}/{len(families)}: {family_name}")
         
         details, error = _get_module_details(family_name)
-        if error:
+        # If error is None, it means we should skip this module (not a fatal error)
+        if error is not None:
             logger.warning(f"Failed to get details for {family_name}: {error}")
             failed_count += 1
+            continue
+        
+        # If details is None, module was skipped (empty output, etc.)
+        if details is None:
             continue
         
         if details and details.get('versions'):
