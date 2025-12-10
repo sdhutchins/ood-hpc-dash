@@ -28,7 +28,7 @@ SETTINGS_FILE = Path("config/settings.json")
 def _load_settings() -> dict:
     """Load settings from JSON file with sensible defaults."""
     defaults = {
-        "navbar_color": "#e3f2fd",
+        "navbar_color": "#ede7f6",
         "code_editor_path": str(Path.cwd()),
         "conda_envs_paths": ["$HOME/.conda/envs"],
     }

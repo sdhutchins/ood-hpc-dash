@@ -18,19 +18,11 @@ SETTINGS_FILE = Path('config/settings.json')
 
 # Whitelisted light navbar colors (value, label)
 ALLOWED_NAV_COLORS = [
-    ("#e3f2fd", "Light Blue"),
-    ("#dfe7fd", "Light Periwinkle"),
-    ("#ede7f6", "Lavender"),
-    ("#f3e8ff", "Soft Lilac"),
-    ("#fdf0f5", "Blush Pink"),
-    ("#ffeef3", "Rose Tint"),
     ("#e8f5e9", "Mint"),
-    ("#e0f7fa", "Cyan Tint"),
-    ("#e5f4ff", "Sky Mist"),
-    ("#fff3e0", "Soft Orange"),
-    ("#fef8e7", "Cream"),
-    ("#f8f9fa", "Off White"),
+    ("#e3f2fd", "Light Blue"),
+    ("#ffeef3", "Rose Tint"),
     ("#f1f3f5", "Light Gray"),
+    ("#ede7f6", "Lavender"),
 ]
 
 
@@ -44,7 +36,7 @@ def _load_settings():
         if not SETTINGS_FILE.exists():
             # Return defaults if file doesn't exist
             return {
-                'navbar_color': '#e3f2fd',
+                'navbar_color': '#ede7f6',
                 'code_editor_path': str(Path.cwd()),
                 'conda_envs_paths': [
                     '$HOME/.conda/envs'
@@ -59,7 +51,7 @@ def _load_settings():
         logger.error(f"Error loading settings: {e}", exc_info=True)
         # Return defaults on error
         return {
-            'navbar_color': '#e3f2fd',
+            'navbar_color': '#ede7f6',
             'code_editor_path': str(Path.cwd()),
             'conda_envs_paths': [
                 '$HOME/.conda/envs',
@@ -120,7 +112,7 @@ def save_settings():
     """Save settings from form submission."""
     try:
         # Get form data
-        navbar_color = request.form.get('navbar_color', '#e3f2fd').strip()
+        navbar_color = request.form.get('navbar_color', '#ede7f6').strip()
         code_editor_path = request.form.get('code_editor_path', '').strip()
         
         # Get conda envs paths (can be multiple, separated by newlines)
