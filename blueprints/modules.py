@@ -118,8 +118,7 @@ def _call_module_command(command: str, timeout: int = 30) -> Tuple[Optional[str]
         return None, f"module command failed: {error_msg}"
     except subprocess.TimeoutExpired:
         # subprocess.run with timeout should already kill the process
-        # Log the timeout for debugging
-        logger.warning(f"Module command timed out after {timeout}s: {command[:50]}")
+        # Don't log timeouts as warnings - they're expected for some slow modules
         return None, f"module command timed out after {timeout}s"
     except Exception as e:
         return None, f"Error calling module command: {str(e)}"
@@ -208,7 +207,7 @@ def _get_module_details(module_name: str) -> Tuple[Optional[Dict[str, Any]], Opt
         Tuple of (dict with 'versions' list and 'description' string, error_message)
         Returns (None, None) if module has no output (skip it, not an error)
     """
-    output, error = _call_module_command(f'module --redirect spider {module_name}', timeout=10)
+    output, error = _call_module_command(f'module --redirect spider {module_name}', timeout=5)
     if error:
         # For individual modules, empty output is not fatal - just skip it
         if "empty output" in error.lower():
@@ -405,7 +404,7 @@ def _get_all_modules_two_stage_streaming():
     
     # Step 3: Fetch descriptions in background and update modules
     failed_count = 0
-    max_workers = 100  # Process 100 modules concurrently
+    max_workers = 20  # Reduced from 100 to prevent overwhelming system
     completed = 0
     
     def fetch_description(family_name):
@@ -413,13 +412,16 @@ def _get_all_modules_two_stage_streaming():
         try:
             details, error = _get_module_details(family_name)
             if error is not None:
-                return None, f"Error: {error}", family_name
+                # Don't log timeouts as warnings - they're expected for some modules
+                if "timed out" not in error.lower():
+                    logger.debug(f"Module {family_name} error: {error}")
+                return None, None, family_name  # Skip silently
             if details is None:
                 return None, None, family_name  # Skipped
             return details.get('description', ''), None, family_name
         except Exception as e:
-            logger.error(f"Exception getting description for {family_name}: {e}", exc_info=True)
-            return None, f"Exception: {str(e)}", family_name
+            logger.debug(f"Exception getting description for {family_name}: {e}")
+            return None, None, family_name  # Skip silently
     
     # Use ThreadPoolExecutor for parallel processing of descriptions
     # Submit all tasks at once with 100 workers
@@ -440,8 +442,8 @@ def _get_all_modules_two_stage_streaming():
             try:
                 description, error, _ = future.result()
                 
-                if error is not None and error.startswith('Error:'):
-                    logger.warning(f"Failed to get description for {family_name}: {error}")
+                # Skip modules with errors (timeouts, etc.) - don't log as warnings
+                if error is not None:
                     failed_count += 1
                     continue
                 
@@ -454,7 +456,7 @@ def _get_all_modules_two_stage_streaming():
                 # Yield description update immediately
                 yield {'type': 'module_update', 'module_name': base_name, 'description': description}
             except Exception as e:
-                logger.error(f"Error processing description for {family_name}: {e}", exc_info=True)
+                logger.debug(f"Error processing description for {family_name}: {e}")
                 failed_count += 1
     
     if failed_count > 0:
@@ -660,34 +662,15 @@ def _group_modules_by_name(modules_data: Dict[str, Dict[str, Any]]):
     return result
 
 def _get_cached_modules() -> List[Dict[str, Any]]:
-    """Get modules from cache or fetch if cache is empty."""
-    global _modules_cache, _modules_cache_timestamp
+    """Get modules from cache. Returns empty list if cache is not ready."""
+    global _modules_cache
     
     if _modules_cache is not None:
         return _modules_cache
     
-    # Fetch modules
-    modules_data, error = _get_all_modules_two_stage()
-    if error:
-        logger.warning(f"Error getting modules: {error}, falling back to file")
-        module_lines = _load_modules_from_file()
-        # Convert old format to new format for compatibility
-        if module_lines:
-            modules_data = {}
-            for line in module_lines:
-                if '/' in line:
-                    parts = line.split('/')
-                    base_name = parts[0] if len(parts) == 2 else '/'.join(parts[:-1])
-                    if base_name not in modules_data:
-                        modules_data[base_name] = {'versions': [], 'description': ''}
-                    modules_data[base_name]['versions'].append(line)
-        else:
-            modules_data = {}
-    
-    grouped_modules = _group_modules_by_name(modules_data) if modules_data else []
-    _modules_cache = grouped_modules
-    _modules_cache_timestamp = time.time()
-    return grouped_modules
+    # Cache not ready yet - return empty list
+    # Preload will populate it on startup
+    return []
 
 
 def _clear_modules_cache():
@@ -882,7 +865,7 @@ def stream_descriptions():
             yield f"data: {json.dumps({'type': 'descriptions_start', 'message': 'Loading descriptions...'})}\n\n"
             
             # Fetch descriptions in parallel
-            max_workers = 100
+            max_workers = 20  # Reduced to prevent overwhelming system
             completed = 0
             failed_count = 0
             
@@ -891,13 +874,16 @@ def stream_descriptions():
                 try:
                     details, error = _get_module_details(family_name)
                     if error is not None:
-                        return None, f"Error: {error}", family_name
+                        # Don't log timeouts - they're expected for some modules
+                        if "timed out" not in error.lower():
+                            logger.debug(f"Module {family_name} error: {error}")
+                        return None, None, family_name  # Skip silently
                     if details is None:
                         return None, None, family_name
                     return details.get('description', ''), None, family_name
                 except Exception as e:
-                    logger.error(f"Exception getting description for {family_name}: {e}", exc_info=True)
-                    return None, f"Exception: {str(e)}", family_name
+                    logger.debug(f"Exception getting description for {family_name}: {e}")
+                    return None, None, family_name  # Skip silently
             
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_family = {executor.submit(fetch_description, family_name): family_name 
