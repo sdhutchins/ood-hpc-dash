@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -201,7 +202,7 @@ def _get_module_details(module_name: str) -> Tuple[Optional[Dict[str, Any]], Opt
         Tuple of (dict with 'versions' list and 'description' string, error_message)
         Returns (None, None) if module has no output (skip it, not an error)
     """
-    output, error = _call_module_command(f'module --redirect spider {module_name}', timeout=5)
+    output, error = _call_module_command(f'module --redirect spider {module_name}', timeout=3)
     if error:
         # For individual modules, empty output is not fatal - just skip it
         if "empty output" in error.lower():
@@ -312,69 +313,88 @@ def _get_all_modules_two_stage_streaming():
     total_families = len(families)
     yield {'type': 'progress', 'message': f'Found {total_families} module families', 'total': total_families, 'current': 0}
     
-    # Step 2: Get details for each module family
+    # Step 2: Get details for each module family (with parallel processing)
     modules_data = {}
     failed_count = 0
     categories_config = _load_categories()
     
-    for i, family_name in enumerate(families):
-        # Log progress every 50 modules
-        if i % 50 == 0:
-            logger.info(f"Processing module {i+1}/{total_families}: {family_name}")
-        
-        yield {'type': 'progress', 'message': f'Processing {family_name}', 'total': total_families, 'current': i + 1}
-        
-        # Small delay to avoid overwhelming the module system
-        if i > 0 and i % 10 == 0:
-            time.sleep(0.05)
-        
+    # Process modules in parallel batches for better performance
+    max_workers = 10  # Process 10 modules concurrently
+    completed = 0
+    
+    def process_module(family_name):
+        """Process a single module and return result."""
         try:
             details, error = _get_module_details(family_name)
+            if error is not None:
+                return None, f"Error: {error}", family_name
+            if details is None:
+                return None, None, family_name  # Skipped
+            return details, None, family_name
         except Exception as e:
             logger.error(f"Exception getting details for {family_name}: {e}", exc_info=True)
-            continue
-        # If error is None, it means we should skip this module (not a fatal error)
-        if error is not None:
-            logger.warning(f"Failed to get details for {family_name}: {error}")
-            failed_count += 1
-            continue
+            return None, f"Exception: {str(e)}", family_name
+    
+    # Use ThreadPoolExecutor for parallel processing
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_family = {executor.submit(process_module, family_name): family_name 
+                           for family_name in families}
         
-        # If details is None, module was skipped (empty output, etc.)
-        if details is None:
-            continue
-        
-        if details and details.get('versions'):
-            modules_data[family_name] = {
-                'versions': details['versions'],
-                'description': details.get('description', '')
-            }
+        # Process completed tasks as they finish
+        for future in as_completed(future_to_family):
+            family_name = future_to_family[future]
+            completed += 1
             
-            # Group and yield this module immediately
-            versions = details['versions']
-            description = details.get('description', '')
+            # Yield progress update
+            yield {'type': 'progress', 'message': f'Processing {family_name}', 'total': total_families, 'current': completed}
             
-            # Determine base name from first version
-            first_version = versions[0]
-            if '/' in first_version:
-                parts = first_version.split('/')
-                if len(parts) > 2:
-                    base_name = '/'.join(parts[:-1])
-                else:
-                    base_name = parts[0]
-            else:
-                base_name = family_name
-            
-            category = _categorize_module(base_name, categories_config)
-            sorted_versions = sorted(versions, key=_natural_sort_key) if versions else []
-            
-            grouped_module = {
-                'name': base_name,
-                'versions': sorted_versions,
-                'description': description,
-                'category': category
-            }
-            
-            yield {'type': 'module', 'module': grouped_module}
+            try:
+                details, error, _ = future.result()
+                
+                if error is not None and error.startswith('Error:'):
+                    logger.warning(f"Failed to get details for {family_name}: {error}")
+                    failed_count += 1
+                    continue
+                
+                if details is None:
+                    continue
+                
+                if details and details.get('versions'):
+                    modules_data[family_name] = {
+                        'versions': details['versions'],
+                        'description': details.get('description', '')
+                    }
+                    
+                    # Group and yield this module immediately
+                    versions = details['versions']
+                    description = details.get('description', '')
+                    
+                    # Determine base name from first version
+                    first_version = versions[0]
+                    if '/' in first_version:
+                        parts = first_version.split('/')
+                        if len(parts) > 2:
+                            base_name = '/'.join(parts[:-1])
+                        else:
+                            base_name = parts[0]
+                    else:
+                        base_name = family_name
+                    
+                    category = _categorize_module(base_name, categories_config)
+                    sorted_versions = sorted(versions, key=_natural_sort_key) if versions else []
+                    
+                    grouped_module = {
+                        'name': base_name,
+                        'versions': sorted_versions,
+                        'description': description,
+                        'category': category
+                    }
+                    
+                    yield {'type': 'module', 'module': grouped_module}
+            except Exception as e:
+                logger.error(f"Error processing result for {family_name}: {e}", exc_info=True)
+                failed_count += 1
     
     if failed_count > 0:
         yield {'type': 'progress', 'message': f'Failed to get details for {failed_count} modules', 'total': total_families, 'current': total_families}
