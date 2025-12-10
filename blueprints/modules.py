@@ -99,12 +99,17 @@ def _call_module_command(command: str, timeout: int = 30) -> Tuple[Optional[str]
             cwd=Path.cwd(),
         )
         if result.returncode == 0:
-            if not result.stdout.strip():
-                # Check stderr for clues
-                if result.stderr:
-                    logger.warning(f"module command returned empty stdout but stderr: {result.stderr[:200]}")
+            # Some module commands output to stderr instead of stdout (e.g., module -t spider)
+            # Check both streams
+            output = result.stdout.strip()
+            if not output and result.stderr:
+                # If stdout is empty but stderr has content, use stderr
+                output = result.stderr.strip()
+                logger.debug(f"module command output was in stderr, using it")
+            
+            if not output:
                 return None, "module command returned empty output"
-            return result.stdout, None
+            return output, None
         error_msg = result.stderr if result.stderr else f"Exit code: {result.returncode}"
         return None, f"module command failed: {error_msg}"
     except subprocess.TimeoutExpired:
