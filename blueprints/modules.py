@@ -47,7 +47,7 @@ def _call_module_command(command: str, timeout: int = 30) -> Tuple[Optional[str]
     """
     Call a module command using bash -lc with explicit environment.
     
-    Since module is a shell function, we must use a login shell.
+    Since module is a shell function, we must use a login shell and source lmod init.
     
     Args:
         command: Module command to run (e.g., 'module -t spider' or 'module --redirect spider zlib')
@@ -60,18 +60,52 @@ def _call_module_command(command: str, timeout: int = 30) -> Tuple[Optional[str]
     if not bash_path:
         return None, "bash binary not found in standard locations"
     
+    # Build command that sources lmod init first
+    lmod_init_paths = [
+        '/usr/share/lmod/lmod/init/bash',
+        '/etc/profile.d/modules.sh',
+    ]
+    
+    # Find lmod init script
+    lmod_init = None
+    for path in lmod_init_paths:
+        if os.path.exists(path):
+            lmod_init = path
+            break
+    
+    if lmod_init:
+        # Source lmod init, then run the command
+        full_command = f'source {lmod_init} && {command}'
+    else:
+        # Fallback: try without explicit sourcing (might work if in .bashrc)
+        full_command = command
+    
+    # Preserve some environment variables that might be needed
+    env = os.environ.copy()
+    # Ensure basic PATH is set
+    env['PATH'] = '/usr/bin:/bin:/usr/local/bin'
+    # Preserve HOME and USER if they exist
+    if 'HOME' not in env:
+        env['HOME'] = os.path.expanduser('~')
+    
     try:
         result = subprocess.run(
-            [bash_path, '-lc', command],
+            [bash_path, '-lc', full_command],
             capture_output=True,
             text=True,
             timeout=timeout,
-            env={'PATH': '/usr/bin:/bin'},
+            env=env,
             cwd=Path.cwd(),
         )
         if result.returncode == 0:
+            if not result.stdout.strip():
+                # Check stderr for clues
+                if result.stderr:
+                    logger.warning(f"module command returned empty stdout but stderr: {result.stderr[:200]}")
+                return None, "module command returned empty output"
             return result.stdout, None
-        return None, f"module command failed: {result.stderr}"
+        error_msg = result.stderr if result.stderr else f"Exit code: {result.returncode}"
+        return None, f"module command failed: {error_msg}"
     except subprocess.TimeoutExpired:
         return None, f"module command timed out after {timeout}s"
     except Exception as e:
@@ -87,9 +121,17 @@ def _get_module_families() -> Tuple[Optional[List[str]], Optional[str]]:
     """
     output, error = _call_module_command('module -t spider', timeout=60)
     if error:
+        logger.error(f"Error calling module -t spider: {error}")
         return None, error
     
-    if not output:
+    if not output or not output.strip():
+        logger.error("module -t spider returned empty output")
+        # Try alternative: check if module function exists
+        test_output, test_error = _call_module_command('type module', timeout=5)
+        if test_error:
+            logger.error(f"module function check failed: {test_error}")
+        else:
+            logger.info(f"module function check output: {test_output[:200]}")
         return None, "module -t spider returned empty output"
     
     # Parse output: each line is a module family name
@@ -100,6 +142,11 @@ def _get_module_families() -> Tuple[Optional[List[str]], Optional[str]]:
         if line and not line.endswith('/'):
             families.append(line)
     
+    if not families:
+        logger.warning(f"No module families found in output. Output preview: {output[:500]}")
+        return None, "No module families found in output"
+    
+    logger.info(f"Found {len(families)} module families")
     return families, None
 
 
