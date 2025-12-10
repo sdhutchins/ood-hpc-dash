@@ -18,7 +18,7 @@ import json
 from blueprints.editor import editor_bp
 from blueprints.envs import envs_bp
 from blueprints.jobs import jobs_bp
-from blueprints.modules import modules_bp
+from blueprints.modules import modules_bp, _preload_modules_cache
 from blueprints.viewer import viewer_bp
 from blueprints.settings import settings_bp
 
@@ -220,6 +220,11 @@ def update_disk_quota_background(force=False):
 # Run disk quota update immediately on startup (non-blocking)
 quota_thread = threading.Thread(target=lambda: update_disk_quota_background(force=True), daemon=True)
 quota_thread.start()
+
+# Preload modules cache immediately on startup (non-blocking)
+# This runs module -t spider and populates the cache so modules page loads instantly
+modules_preload_thread = threading.Thread(target=_preload_modules_cache, daemon=True)
+modules_preload_thread.start()
 
 # Register blueprints
 app.register_blueprint(modules_bp)

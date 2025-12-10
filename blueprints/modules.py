@@ -364,10 +364,11 @@ def _get_all_modules_two_stage_streaming():
     total_families = len(families)
     
     yield {'type': 'progress', 'message': f'Found {total_families} module families with versions', 'total': total_families, 'current': 0}
-    yield {'type': 'descriptions_start', 'message': 'Loading descriptions...'}
     
     # Step 2: Display all modules immediately (without descriptions)
     categories_config = _load_categories()
+    module_name_map = {}  # Map family_name -> base_name for description updates
+    
     for family_name in families:
         versions = sorted(modules_dict[family_name], key=_natural_sort_key)
         
@@ -385,6 +386,9 @@ def _get_all_modules_two_stage_streaming():
         else:
             base_name = family_name
         
+        # Store mapping for description updates
+        module_name_map[family_name] = base_name
+        
         category = _categorize_module(base_name, categories_config)
         
         # Yield module immediately without description
@@ -396,11 +400,12 @@ def _get_all_modules_two_stage_streaming():
         }
         yield {'type': 'module', 'module': grouped_module}
     
+    yield {'type': 'descriptions_start', 'message': 'Loading descriptions...'}
     yield {'type': 'progress', 'message': f'Displayed {total_families} modules, loading descriptions...', 'total': total_families, 'current': 0}
     
     # Step 3: Fetch descriptions in background and update modules
     failed_count = 0
-    max_workers = 20  # Process 20 modules concurrently
+    max_workers = 100  # Process 100 modules concurrently
     completed = 0
     
     def fetch_description(family_name):
@@ -417,60 +422,40 @@ def _get_all_modules_two_stage_streaming():
             return None, f"Exception: {str(e)}", family_name
     
     # Use ThreadPoolExecutor for parallel processing of descriptions
-    batch_size = max_workers * 2
+    # Submit all tasks at once with 100 workers
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Process families in batches
-        for batch_start in range(0, len(families), batch_size):
-            batch_end = min(batch_start + batch_size, len(families))
-            batch_families = families[batch_start:batch_end]
+        # Submit all tasks at once
+        future_to_family = {executor.submit(fetch_description, family_name): family_name 
+                           for family_name in families}
+        
+        # Process completed tasks as they finish
+        for future in as_completed(future_to_family):
+            family_name = future_to_family[future]
+            completed += 1
             
-            # Submit batch of tasks
-            future_to_family = {executor.submit(fetch_description, family_name): family_name 
-                               for family_name in batch_families}
+            # Yield progress update less frequently to avoid overwhelming
+            if completed % 10 == 0 or completed == total_families:
+                yield {'type': 'progress', 'message': f'Loading descriptions: {completed}/{total_families}', 'total': total_families, 'current': completed}
             
-            # Process completed tasks as they finish
-            for future in as_completed(future_to_family):
-                family_name = future_to_family[future]
-                completed += 1
+            try:
+                description, error, _ = future.result()
                 
-                # Yield progress update
-                yield {'type': 'progress', 'message': f'Loading descriptions: {family_name}', 'total': total_families, 'current': completed}
-                
-                try:
-                    description, error, _ = future.result()
-                    
-                    if error is not None and error.startswith('Error:'):
-                        logger.warning(f"Failed to get description for {family_name}: {error}")
-                        failed_count += 1
-                        continue
-                    
-                    if description is None:
-                        description = ''  # Use empty string if skipped
-                    
-                    # Determine base name for update
-                    versions = modules_dict.get(family_name, [])
-                    if versions:
-                        first_version = versions[0]
-                        if '/' in first_version:
-                            parts = first_version.split('/')
-                            if len(parts) > 2:
-                                base_name = '/'.join(parts[:-1])
-                            else:
-                                base_name = parts[0]
-                        else:
-                            base_name = family_name
-                    else:
-                        base_name = family_name
-                    
-                    # Yield description update
-                    yield {'type': 'module_update', 'module_name': base_name, 'description': description}
-                except Exception as e:
-                    logger.error(f"Error processing description for {family_name}: {e}", exc_info=True)
+                if error is not None and error.startswith('Error:'):
+                    logger.warning(f"Failed to get description for {family_name}: {error}")
                     failed_count += 1
+                    continue
                 
-                # Small delay every 10 modules
-                if completed % 10 == 0 and completed > 0:
-                    time.sleep(0.1)
+                if description is None:
+                    description = ''  # Use empty string if skipped
+                
+                # Get base name from the map we created earlier
+                base_name = module_name_map.get(family_name, family_name)
+                
+                # Yield description update immediately
+                yield {'type': 'module_update', 'module_name': base_name, 'description': description}
+            except Exception as e:
+                logger.error(f"Error processing description for {family_name}: {e}", exc_info=True)
+                failed_count += 1
     
     if failed_count > 0:
         yield {'type': 'progress', 'message': f'Failed to get descriptions for {failed_count} modules', 'total': total_families, 'current': total_families}
@@ -844,3 +829,72 @@ def refresh_status():
     """Check if refresh is in progress."""
     with _streaming_lock:
         return jsonify({'in_progress': _streaming_in_progress})
+
+
+def _preload_modules_cache():
+    """
+    Preload modules cache on app startup by running module -t spider.
+    This ensures modules are ready immediately when user visits the modules page.
+    """
+    global _modules_cache, _modules_cache_timestamp
+    
+    logger.info("Preloading modules cache on startup...")
+    try:
+        # Get all modules and versions from module -t spider
+        output, error = _call_module_command('module -t spider', timeout=60)
+        if error:
+            logger.warning(f"Failed to preload modules cache: {error}")
+            return
+        
+        if not output or not output.strip():
+            logger.warning("module -t spider returned empty output during preload")
+            return
+        
+        # Parse modules immediately
+        modules_dict = _parse_module_spider_output(output)
+        families = sorted(modules_dict.keys())
+        total_families = len(families)
+        
+        logger.info(f"Preloaded {total_families} module families from module -t spider")
+        
+        # Create basic module list (without descriptions - those load on demand)
+        categories_config = _load_categories()
+        grouped_modules = []
+        
+        for family_name in families:
+            versions = sorted(modules_dict[family_name], key=_natural_sort_key)
+            
+            # Determine base name from first version
+            if versions:
+                first_version = versions[0]
+                if '/' in first_version:
+                    parts = first_version.split('/')
+                    if len(parts) > 2:
+                        base_name = '/'.join(parts[:-1])
+                    else:
+                        base_name = parts[0]
+                else:
+                    base_name = family_name
+            else:
+                base_name = family_name
+            
+            category = _categorize_module(base_name, categories_config)
+            
+            grouped_modules.append({
+                'name': base_name,
+                'versions': versions,
+                'description': '',  # Descriptions load on demand
+                'category': category
+            })
+        
+        # Sort alphabetically
+        grouped_modules.sort(key=lambda m: m['name'].lower())
+        
+        # Update cache
+        _modules_cache = grouped_modules
+        _modules_cache_timestamp = time.time()
+        
+        logger.info(f"Modules cache preloaded successfully: {len(grouped_modules)} modules, {sum(len(m['versions']) for m in grouped_modules)} total versions")
+        
+    except Exception as e:
+        logger.error(f"Error preloading modules cache: {e}", exc_info=True)
