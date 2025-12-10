@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # Third-party imports
-from flask import Blueprint, jsonify, render_template
+from flask import Blueprint, jsonify, render_template, Response
+import threading
 
 # Blueprint for the modules page
 modules_bp = Blueprint('modules', __name__, url_prefix='/modules')
@@ -22,6 +23,10 @@ CATEGORIES_FILE = Path('config/module_categories.json')
 
 # Module cache (stores grouped modules data)
 _modules_cache: Optional[List[Dict[str, Any]]] = None
+
+# Streaming state
+_streaming_lock = threading.Lock()
+_streaming_in_progress = False
 
 # Common absolute paths for bash
 BASH_PATHS = [
@@ -121,53 +126,142 @@ def _get_module_details(module_name: str) -> Tuple[Optional[Dict[str, Any]], Opt
     in_versions_section = False
     in_description_section = False
     
-    for line in output.split('\n'):
-        original_line = line
-        line = line.strip()
+    lines = output.split('\n')
+    for i, line in enumerate(lines):
+        line_stripped = line.strip()
         
         # Skip separator lines
-        if line.startswith('---'):
+        if line_stripped.startswith('---'):
+            continue
+        
+        # Skip empty lines (but allow them within description)
+        if not line_stripped and not in_description_section:
+            continue
+        
+        # Check for module name line (e.g., "zlib:")
+        if line_stripped.endswith(':') and '/' not in line_stripped and 'Versions' not in line_stripped and 'Description' not in line_stripped and 'Dependencies' not in line_stripped:
+            in_versions_section = False
+            in_description_section = False
             continue
         
         # Check for Versions section
-        if 'Versions:' in line:
+        if 'Versions:' in line_stripped:
             in_versions_section = True
             in_description_section = False
             continue
         
         # Check for Description section
-        if 'Description:' in line:
+        if 'Description:' in line_stripped:
             in_versions_section = False
             in_description_section = True
             # Description text may be on the same line after "Description:"
-            desc_part = line.split('Description:', 1)
+            desc_part = line_stripped.split('Description:', 1)
             if len(desc_part) > 1 and desc_part[1].strip():
                 description_lines.append(desc_part[1].strip())
             continue
         
         # Check for Dependencies section (end of description)
-        if 'Dependencies:' in line:
+        if 'Dependencies:' in line_stripped:
             in_description_section = False
             in_versions_section = False
             continue
         
         # Collect versions (they appear indented after "Versions:")
-        if in_versions_section and line:
+        if in_versions_section and line_stripped:
             # Versions are listed as "module/version" - check if it looks like a version line
-            if '/' in line and not line.startswith('(') and ':' not in line:
+            if '/' in line_stripped and not line_stripped.startswith('(') and ':' not in line_stripped:
                 # This looks like a version entry
-                versions.append(line)
+                versions.append(line_stripped)
         
-        # Collect description
-        if in_description_section and line:
-            description_lines.append(line)
+        # Collect description (all lines between "Description:" and "Dependencies:")
+        if in_description_section and line_stripped:
+            # Include all text until we hit Dependencies
+            description_lines.append(line_stripped)
     
     description = ' '.join(description_lines).strip() if description_lines else ''
+    
+    # Debug logging for first few modules to troubleshoot
+    if module_name in ['zlib', 'python', 'gcc'] and not description:
+        logger.warning(f"Module {module_name}: No description found. Versions: {len(versions)}. Output preview:\n{output[:1000]}")
     
     return {
         'versions': versions,
         'description': description
     }, None
+
+
+def _get_all_modules_two_stage_streaming():
+    """
+    Generator that yields modules as they're discovered (for streaming).
+    
+    Yields:
+        Dict with 'type' ('progress', 'module', 'complete', 'error') and relevant data
+    """
+    # Step 1: Get all module family names
+    families, error = _get_module_families()
+    if error:
+        yield {'type': 'error', 'message': error}
+        return
+    
+    if not families:
+        yield {'type': 'error', 'message': 'No module families found'}
+        return
+    
+    total_families = len(families)
+    yield {'type': 'progress', 'message': f'Found {total_families} module families', 'total': total_families, 'current': 0}
+    
+    # Step 2: Get details for each module family
+    modules_data = {}
+    failed_count = 0
+    categories_config = _load_categories()
+    
+    for i, family_name in enumerate(families):
+        yield {'type': 'progress', 'message': f'Processing {family_name}', 'total': total_families, 'current': i + 1}
+        
+        details, error = _get_module_details(family_name)
+        if error:
+            logger.warning(f"Failed to get details for {family_name}: {error}")
+            failed_count += 1
+            continue
+        
+        if details and details.get('versions'):
+            modules_data[family_name] = {
+                'versions': details['versions'],
+                'description': details.get('description', '')
+            }
+            
+            # Group and yield this module immediately
+            versions = details['versions']
+            description = details.get('description', '')
+            
+            # Determine base name from first version
+            first_version = versions[0]
+            if '/' in first_version:
+                parts = first_version.split('/')
+                if len(parts) > 2:
+                    base_name = '/'.join(parts[:-1])
+                else:
+                    base_name = parts[0]
+            else:
+                base_name = family_name
+            
+            category = _categorize_module(base_name, categories_config)
+            sorted_versions = sorted(versions, key=_natural_sort_key) if versions else []
+            
+            grouped_module = {
+                'name': base_name,
+                'versions': sorted_versions,
+                'description': description,
+                'category': category
+            }
+            
+            yield {'type': 'module', 'module': grouped_module}
+    
+    if failed_count > 0:
+        yield {'type': 'progress', 'message': f'Failed to get details for {failed_count} modules', 'total': total_families, 'current': total_families}
+    
+    total_versions = sum(len(data['versions']) for data in modules_data.values())
+    yield {'type': 'complete', 'message': f'Retrieved {total_versions} module versions across {len(modules_data)} modules', 'total_modules': len(modules_data)}
 
 
 def _get_all_modules_two_stage() -> Tuple[Optional[Dict[str, Dict[str, Any]]], Optional[str]]:
@@ -453,31 +547,58 @@ def modules_list():
     })
 
 
-@modules_bp.route('/refresh', methods=['POST'])
+@modules_bp.route('/refresh-start', methods=['POST'])
+def refresh_start():
+    """Start refresh process by clearing cache."""
+    global _streaming_in_progress
+    
+    with _streaming_lock:
+        if _streaming_in_progress:
+            return jsonify({'error': 'Refresh already in progress'}), 409
+        
+        _streaming_in_progress = True
+        _clear_modules_cache()
+    
+    return jsonify({'status': 'started'})
+
+
+@modules_bp.route('/refresh-stream')
 def refresh_modules():
-    """Clear cache and fetch fresh module data."""
-    _clear_modules_cache()
-    grouped_modules = _get_cached_modules()
-    unique_count = len(grouped_modules)
+    """Stream fresh module data via SSE (GET endpoint for EventSource)."""
+    global _streaming_in_progress
     
-    # Group by category for frontend
-    modules_by_category = {}
-    for module in grouped_modules:
-        cat = module['category']
-        if cat not in modules_by_category:
-            modules_by_category[cat] = []
-        modules_by_category[cat].append(module)
+    def generate():
+        global _streaming_in_progress
+        try:
+            all_modules = []
+            for event in _get_all_modules_two_stage_streaming():
+                if event['type'] == 'module':
+                    all_modules.append(event['module'])
+                    # Send module to client
+                    yield f"data: {json.dumps(event)}\n\n"
+                elif event['type'] == 'progress':
+                    # Send progress update
+                    yield f"data: {json.dumps(event)}\n\n"
+                elif event['type'] == 'complete':
+                    # Update cache with all collected modules
+                    global _modules_cache
+                    _modules_cache = sorted(all_modules, key=lambda m: m['name'].lower())
+                    # Send completion
+                    yield f"data: {json.dumps(event)}\n\n"
+                elif event['type'] == 'error':
+                    yield f"data: {json.dumps(event)}\n\n"
+        finally:
+            with _streaming_lock:
+                _streaming_in_progress = False
     
-    # Get category order (sorted, with Misc last)
-    category_order = sorted(modules_by_category.keys())
-    if 'Misc' in category_order:
-        category_order.remove('Misc')
-        category_order.append('Misc')
-    
-    return jsonify({
-        'modules': grouped_modules,
-        'modules_by_category': modules_by_category,
-        'category_order': category_order,
-        'unique_count': unique_count,
-        'loading': False
+    return Response(generate(), mimetype='text/event-stream', headers={
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no'
     })
+
+
+@modules_bp.route('/refresh-status')
+def refresh_status():
+    """Check if refresh is in progress."""
+    with _streaming_lock:
+        return jsonify({'in_progress': _streaming_in_progress})

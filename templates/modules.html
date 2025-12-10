@@ -54,7 +54,7 @@
                     <div class="d-flex justify-content-between align-items-center">
                         <h5 class="mb-0">Available Modules</h5>
                         <button type="button" class="btn btn-sm" id="refreshModulesBtn" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);" title="Refresh module list">
-                            <i class="fas fa-sync-alt me-1"></i>Refresh
+                            <i class="fas fa-sync-alt me-1"></i><span>Refresh</span>
                         </button>
                     </div>
                 </div>
@@ -384,19 +384,36 @@
         // Initial wiring for server-rendered modules
         attachCopyHandlers();
         
-        // Refresh button handler
+        // Refresh button handler with streaming
         const refreshBtn = document.getElementById('refreshModulesBtn');
         if (refreshBtn) {
             refreshBtn.addEventListener('click', function() {
                 const icon = this.querySelector('i');
                 const originalClass = icon.className;
+                const buttonText = this.querySelector('span');
+                
+                // Check if already refreshing
+                if (this.disabled) {
+                    return;
+                }
                 
                 // Show loading state
                 icon.className = 'fas fa-spinner fa-spin me-1';
                 this.disabled = true;
                 
-                // Fetch fresh data
-                fetch('{{ url_for("modules.refresh_modules") }}', {
+                // Clear existing modules
+                allModules = [];
+                const tbody = document.getElementById('modulesTableBody');
+                if (tbody) {
+                    tbody.innerHTML = '';
+                }
+                const countEl = document.getElementById('uniqueCount');
+                if (countEl) {
+                    countEl.textContent = '0';
+                }
+                
+                // Start refresh process
+                fetch('{{ url_for("modules.refresh_start") }}', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -404,30 +421,126 @@
                 })
                 .then(response => {
                     if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
+                        throw new Error('Failed to start refresh');
                     }
-                    return response.json();
-                })
-                .then(data => {
-                    allModules = data.modules;
-                    categoryOrder = data.category_order || [];
-                    const countEl = document.getElementById('uniqueCount');
-                    if (countEl) {
-                        countEl.textContent = data.unique_count || data.modules.length;
-                    }
-                    displayModules(data.modules);
-                    populateCategoryFilter(categoryOrder);
                     
-                    // Restore button state
-                    icon.className = originalClass;
-                    this.disabled = false;
+                    // Create EventSource for streaming (GET endpoint)
+                    const eventSource = new EventSource('{{ url_for("modules.refresh_modules") }}');
+                    
+                    let moduleCount = 0;
+                    const collectedModules = [];
+                    
+                    eventSource.onmessage = function(event) {
+                        try {
+                            const data = JSON.parse(event.data);
+                            
+                            if (data.type === 'progress') {
+                                // Update button text with progress
+                                if (buttonText.textContent !== undefined) {
+                                    buttonText.textContent = `${data.current}/${data.total}`;
+                                }
+                                console.log(data.message);
+                            } else if (data.type === 'module') {
+                                // Add module to collection and display immediately
+                                collectedModules.push(data.module);
+                                allModules.push(data.module);
+                                moduleCount++;
+                                
+                                // Add module row to table immediately
+                                if (tbody) {
+                                    const row = document.createElement('tr');
+                                    row.className = 'module-row';
+                                    row.setAttribute('data-category', data.module.category || 'Misc');
+                                    
+                                    const nameCell = document.createElement('td');
+                                    nameCell.innerHTML = '<code>' + escapeHtml(data.module.name) + '</code>';
+                                    
+                                    const descCell = document.createElement('td');
+                                    if (data.module.description) {
+                                        descCell.innerHTML = '<small class="text-muted">' + escapeHtml(data.module.description) + '</small>';
+                                    } else {
+                                        descCell.innerHTML = '<span class="text-muted">-</span>';
+                                    }
+                                    
+                                    const versionsCell = document.createElement('td');
+                                    if (data.module.versions && data.module.versions.length > 0) {
+                                        versionsCell.innerHTML = data.module.versions.map(v => 
+                                            '<button type="button" class="btn btn-sm copy-version me-1 mb-1" data-version="' + escapeHtml(v) + '" title="Click to copy: module load ' + escapeHtml(v) + '" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);"><i class="fa-regular fa-copy me-1"></i><code class="text-reset">' + escapeHtml(v) + '</code></button>'
+                                        ).join('');
+                                    } else {
+                                        versionsCell.innerHTML = '<span class="text-muted">-</span>';
+                                    }
+                                    
+                                    row.appendChild(nameCell);
+                                    row.appendChild(descCell);
+                                    row.appendChild(versionsCell);
+                                    tbody.appendChild(row);
+                                    
+                                    // Wire up copy handlers for new buttons
+                                    attachCopyHandlers();
+                                }
+                                
+                                // Update count
+                                if (countEl) {
+                                    countEl.textContent = moduleCount;
+                                }
+                                
+                                // Apply current filters
+                                applyFilters();
+                            } else if (data.type === 'complete') {
+                                // Refresh complete
+                                eventSource.close();
+                                
+                                // Update category filter with all collected modules
+                                const categories = new Set();
+                                collectedModules.forEach(m => categories.add(m.category));
+                                populateCategoryFilter(Array.from(categories).sort());
+                                
+                                // Restore button state
+                                icon.className = originalClass;
+                                if (buttonText.textContent !== undefined) {
+                                    buttonText.textContent = 'Refresh';
+                                }
+                                this.disabled = false;
+                                
+                                console.log(data.message);
+                            } else if (data.type === 'error') {
+                                // Error occurred
+                                eventSource.close();
+                                alert('Error: ' + data.message);
+                                icon.className = originalClass;
+                                if (buttonText.textContent !== undefined) {
+                                    buttonText.textContent = 'Refresh';
+                                }
+                                this.disabled = false;
+                            }
+                        } catch (error) {
+                            console.error('Error parsing SSE data:', error);
+                        }
+                    };
+                    
+                    eventSource.onerror = function(error) {
+                        console.error('EventSource error:', error);
+                        eventSource.close();
+                        alert('Connection error while refreshing modules.');
+                        icon.className = originalClass;
+                        if (buttonText.textContent !== undefined) {
+                            buttonText.textContent = 'Refresh';
+                        }
+                        this.disabled = false;
+                    };
                 })
                 .catch(error => {
-                    console.error('Error refreshing modules:', error);
-                    alert('Failed to refresh modules. Please try again.');
+                    console.error('Error starting refresh:', error);
+                    alert('Failed to start refresh. Please try again.');
                     icon.className = originalClass;
+                    if (buttonText.textContent !== undefined) {
+                        buttonText.textContent = 'Refresh';
+                    }
                     this.disabled = false;
                 });
+                
+                // Remove the old eventSource code that was here
             });
         }
     });
