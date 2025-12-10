@@ -154,13 +154,33 @@ def _get_module_families() -> Tuple[Optional[List[str]], Optional[str]]:
         # Success - break out of retry loop
         break
     
-    # Parse output: each line is a module family name
-    families = []
+    # Parse output: extract unique family names
+    # module -t spider returns both family names and full module/version names
+    # We need to extract just the family names (base names without versions)
+    families_set = set()
     for line in output.split('\n'):
         line = line.strip()
         # Skip empty lines and lines ending with '/' (these are directories in hierarchical modules)
-        if line and not line.endswith('/'):
-            families.append(line)
+        if not line or line.endswith('/'):
+            continue
+        
+        # If line contains '/', it's a full module/version - extract family name
+        if '/' in line:
+            # Extract base name (everything before the last '/')
+            parts = line.split('/')
+            if len(parts) >= 2:
+                # For hierarchical modules like "rc/3DSlicer/5.2.2", family is "rc/3DSlicer"
+                # For simple modules like "ABRA2/2.23-GCC-8.3.0", family is "ABRA2"
+                if len(parts) > 2:
+                    family_name = '/'.join(parts[:-1])
+                else:
+                    family_name = parts[0]
+                families_set.add(family_name)
+        else:
+            # No '/', it's already a family name
+            families_set.add(line)
+    
+    families = sorted(list(families_set))
     
     if not families:
         logger.warning(f"No module families found in output. Output preview: {output[:500]}")
@@ -181,7 +201,7 @@ def _get_module_details(module_name: str) -> Tuple[Optional[Dict[str, Any]], Opt
         Tuple of (dict with 'versions' list and 'description' string, error_message)
         Returns (None, None) if module has no output (skip it, not an error)
     """
-    output, error = _call_module_command(f'module --redirect spider {module_name}', timeout=15)
+    output, error = _call_module_command(f'module --redirect spider {module_name}', timeout=5)
     if error:
         # For individual modules, empty output is not fatal - just skip it
         if "empty output" in error.lower():
@@ -298,13 +318,21 @@ def _get_all_modules_two_stage_streaming():
     categories_config = _load_categories()
     
     for i, family_name in enumerate(families):
+        # Log progress every 50 modules
+        if i % 50 == 0:
+            logger.info(f"Processing module {i+1}/{total_families}: {family_name}")
+        
         yield {'type': 'progress', 'message': f'Processing {family_name}', 'total': total_families, 'current': i + 1}
         
         # Small delay to avoid overwhelming the module system
         if i > 0 and i % 10 == 0:
-            time.sleep(0.1)
+            time.sleep(0.05)
         
-        details, error = _get_module_details(family_name)
+        try:
+            details, error = _get_module_details(family_name)
+        except Exception as e:
+            logger.error(f"Exception getting details for {family_name}: {e}", exc_info=True)
+            continue
         # If error is None, it means we should skip this module (not a fatal error)
         if error is not None:
             logger.warning(f"Failed to get details for {family_name}: {error}")
