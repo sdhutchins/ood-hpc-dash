@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # Third-party imports
-from flask import Blueprint, jsonify, render_template
+from flask import Blueprint, jsonify, render_template, request
 
 jobs_bp = Blueprint('jobs', __name__, url_prefix='/jobs')
 logger = logging.getLogger(__name__.capitalize())
@@ -30,6 +30,12 @@ SQUEUE_PATHS = [
     '/usr/bin/squeue',
     '/opt/slurm/bin/squeue',
     '/usr/local/bin/squeue',
+]
+SACCT_PATHS = [
+    '/cm/shared/apps/slurm/18.08.9/bin/sacct',
+    '/usr/bin/sacct',
+    '/opt/slurm/bin/sacct',
+    '/usr/local/bin/sacct',
 ]
 
 
@@ -70,9 +76,12 @@ def _call_sinfo() -> Tuple[Optional[str], Optional[str]]:
         return None, f"Error calling sinfo: {str(e)}"
 
 
-def _call_squeue() -> Tuple[Optional[str], Optional[str]]:
+def _call_squeue(user: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
     """
     Call squeue with absolute path and explicit environment.
+    
+    Args:
+        user: Optional username to filter jobs. If None, shows all jobs.
     
     Returns:
         Tuple of (output, error_message)
@@ -81,9 +90,13 @@ def _call_squeue() -> Tuple[Optional[str], Optional[str]]:
     if not squeue_path:
         return None, "squeue binary not found in standard locations"
     
+    cmd = [squeue_path, '--Format=JobID,Name,State,Partition,TimeUsed,TimeLimit,User']
+    if user:
+        cmd.extend(['-u', user])
+    
     try:
         result = subprocess.run(
-            [squeue_path, '--Format=JobID,Name,State,Partition,TimeUsed,TimeLimit'],
+            cmd,
             capture_output=True,
             text=True,
             timeout=30,
@@ -97,6 +110,54 @@ def _call_squeue() -> Tuple[Optional[str], Optional[str]]:
         return None, "squeue command timed out"
     except Exception as e:
         return None, f"Error calling squeue: {str(e)}"
+
+
+def _call_sacct(user: Optional[str] = None, max_jobs: int = 100) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Call sacct to get job history with efficiency metrics.
+    
+    Args:
+        user: Optional username to filter jobs. If None, uses current user.
+        max_jobs: Maximum number of jobs to retrieve (default 100)
+    
+    Returns:
+        Tuple of (output, error_message)
+    """
+    sacct_path = _find_binary(SACCT_PATHS)
+    if not sacct_path:
+        return None, "sacct binary not found in standard locations"
+    
+    if not user:
+        user = os.environ.get('USER', '')
+    
+    # Format: JobID,JobName,State,Partition,Start,End,Elapsed,TotalCPU,ReqCPUS,MaxRSS,AllocCPUS,CPUTime,CPUUtilization
+    cmd = [
+        sacct_path,
+        '--format=JobID,JobName,State,Partition,Start,End,Elapsed,TotalCPU,ReqCPUS,MaxRSS,AllocCPUS,CPUTime,CPUUtilization',
+        '--parsable2',
+        '--noheader',
+        '--units=M',  # Memory in MB
+        '-u', user,
+        '--starttime=today-30days',  # Last 30 days
+        '-n', str(max_jobs),  # Limit total jobs retrieved
+    ]
+    
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={'PATH': '/usr/bin:/bin'},
+            cwd=Path.cwd(),
+        )
+        if result.returncode == 0:
+            return result.stdout, None
+        return None, f"sacct failed: {result.stderr}"
+    except subprocess.TimeoutExpired:
+        return None, "sacct command timed out"
+    except Exception as e:
+        return None, f"Error calling sacct: {str(e)}"
 
 
 def _load_partition_metadata() -> Dict[str, Any]:
@@ -327,11 +388,163 @@ def _generate_partition_reference_data(partitions: List[Dict[str, Any]]) -> Dict
     return categories
 
 
+def _parse_sacct_output(output: str) -> List[Dict[str, Any]]:
+    """
+    Parse sacct output and calculate efficiency metrics.
+    
+    Args:
+        output: sacct output (parsable2 format)
+    
+    Returns:
+        List of job dictionaries with efficiency metrics
+    """
+    jobs = []
+    lines = output.strip().split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Parsable2 format uses | as delimiter
+        parts = line.split('|')
+        if len(parts) < 13:
+            continue
+        
+        job_id = parts[0]
+        job_name = parts[1] if len(parts) > 1 else 'N/A'
+        state = parts[2] if len(parts) > 2 else 'UNKNOWN'
+        partition = parts[3] if len(parts) > 3 else 'N/A'
+        start = parts[4] if len(parts) > 4 else 'N/A'
+        end = parts[5] if len(parts) > 5 else 'N/A'
+        elapsed = parts[6] if len(parts) > 6 else '00:00:00'
+        total_cpu = parts[7] if len(parts) > 7 else '00:00:00'
+        req_cpus = parts[8] if len(parts) > 8 else '0'
+        max_rss = parts[9] if len(parts) > 9 else '0M'
+        alloc_cpus = parts[10] if len(parts) > 10 else '0'
+        cpu_time = parts[11] if len(parts) > 11 else '00:00:00'
+        cpu_util = parts[12] if len(parts) > 12 else '0.00'
+        
+        # Calculate CPU efficiency: (CPUUtilization / 100) or (TotalCPU / (Elapsed * AllocCPUS))
+        cpu_efficiency = 0.0
+        try:
+            cpu_util_float = float(cpu_util) if cpu_util and cpu_util != 'N/A' else 0.0
+            if cpu_util_float > 0:
+                cpu_efficiency = cpu_util_float
+            else:
+                # Fallback: calculate from TotalCPU / (Elapsed * AllocCPUS)
+                elapsed_sec = _parse_time_to_seconds(elapsed)
+                alloc_cpus_int = int(alloc_cpus) if alloc_cpus and alloc_cpus.isdigit() else 1
+                total_cpu_sec = _parse_time_to_seconds(total_cpu)
+                if elapsed_sec > 0 and alloc_cpus_int > 0:
+                    cpu_efficiency = (total_cpu_sec / (elapsed_sec * alloc_cpus_int)) * 100
+        except (ValueError, ZeroDivisionError):
+            cpu_efficiency = 0.0
+        
+        # Parse memory (format: "1234M" or "1.2G")
+        memory_mb = 0.0
+        try:
+            if max_rss and max_rss != 'N/A':
+                if max_rss.endswith('M'):
+                    memory_mb = float(max_rss[:-1])
+                elif max_rss.endswith('G'):
+                    memory_mb = float(max_rss[:-1]) * 1024
+                elif max_rss.endswith('K'):
+                    memory_mb = float(max_rss[:-1]) / 1024
+        except (ValueError, AttributeError):
+            memory_mb = 0.0
+        
+        jobs.append({
+            'id': job_id,
+            'name': job_name,
+            'state': state,
+            'partition': partition,
+            'start': start,
+            'end': end,
+            'elapsed': elapsed,
+            'req_cpus': req_cpus,
+            'alloc_cpus': alloc_cpus,
+            'max_rss': max_rss,
+            'cpu_efficiency': round(cpu_efficiency, 1),
+            'memory_mb': round(memory_mb, 1),
+        })
+    
+    return jobs
+
+
+def _parse_time_to_seconds(time_str: str) -> int:
+    """Parse SLURM time format (HH:MM:SS or DD-HH:MM:SS) to seconds."""
+    if not time_str or time_str == 'N/A':
+        return 0
+    
+    try:
+        if '-' in time_str:
+            # Format: DD-HH:MM:SS
+            parts = time_str.split('-')
+            days = int(parts[0])
+            time_parts = parts[1].split(':')
+            hours = int(time_parts[0])
+            minutes = int(time_parts[1]) if len(time_parts) > 1 else 0
+            seconds = int(time_parts[2]) if len(time_parts) > 2 else 0
+            return days * 86400 + hours * 3600 + minutes * 60 + seconds
+        else:
+            # Format: HH:MM:SS
+            time_parts = time_str.split(':')
+            hours = int(time_parts[0])
+            minutes = int(time_parts[1]) if len(time_parts) > 1 else 0
+            seconds = int(time_parts[2]) if len(time_parts) > 2 else 0
+            return hours * 3600 + minutes * 60 + seconds
+    except (ValueError, IndexError):
+        return 0
+
+
 @jobs_bp.route('/')
 def jobs():
     """Render the jobs page with partition information."""
     partitions, error = _get_partition_info()
     slurm_load_data = _parse_slurm_load()
+    
+    # Get current user
+    username = os.environ.get('USER', '')
+    
+    # Get user's running/queued jobs
+    user_jobs = []
+    user_jobs_error = None
+    if username:
+        output, error_msg = _call_squeue(user=username)
+        if not error_msg and output:
+            lines = output.strip().split('\n')
+            if len(lines) > 1:
+                for line in lines[1:]:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 6:
+                        user_jobs.append({
+                            'id': parts[0],
+                            'name': parts[1],
+                            'state': parts[2],
+                            'partition': parts[3],
+                            'time_used': parts[4],
+                            'time_limit': parts[5] if len(parts) > 5 else 'N/A',
+                        })
+        else:
+            user_jobs_error = error_msg
+    
+    # Get job history (first page)
+    job_history = []
+    total_history = 0
+    history_error = None
+    if username:
+        output, error_msg = _call_sacct(user=username, max_jobs=100)
+        if not error_msg and output:
+            all_jobs = _parse_sacct_output(output)
+            total_history = len(all_jobs)
+            # Get first page (10 jobs)
+            job_history = all_jobs[:10]
+        else:
+            history_error = error_msg
     
     # Generate partition reference data
     partition_reference = {}
@@ -365,6 +578,12 @@ def jobs():
         summary=summary,
         partition_reference=partition_reference,
         error=error,
+        user_jobs=user_jobs,
+        user_jobs_error=user_jobs_error,
+        job_history=job_history,
+        total_history=total_history,
+        history_error=history_error,
+        username=username,
     )
 
 
@@ -376,12 +595,17 @@ def jobs_status():
     Returns:
         JSON response with running/pending jobs and partition utilization.
     """
-    output, error = _call_squeue()
+    username = os.environ.get('USER', '')
+    output, error = _call_squeue(user=username)
     if error:
         return jsonify({'error': error}), 500
     
     if not output:
-        return jsonify({'error': 'squeue returned empty output'}), 500
+        return jsonify({
+            'jobs': [],
+            'running': 0,
+            'pending': 0,
+        })
     
     # Parse squeue output
     lines = output.strip().split('\n')
@@ -443,4 +667,49 @@ def jobs_status():
         'running': running,
         'pending': pending,
         'partitions': partition_util,
+    })
+
+
+@jobs_bp.route('/history')
+def jobs_history():
+    """
+    Return JSON with job history (paginated).
+    
+    Query params:
+        page: Page number (default 1)
+        per_page: Jobs per page (default 10)
+    """
+    username = os.environ.get('USER', '')
+    if not username:
+        return jsonify({'error': 'User not found'}), 400
+    
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 10))
+    offset = (page - 1) * per_page
+    
+    output, error = _call_sacct(user=username, max_jobs=100)
+    if error:
+        return jsonify({'error': error}), 500
+    
+    if not output:
+        return jsonify({
+            'jobs': [],
+            'total': 0,
+            'page': page,
+            'per_page': per_page,
+        })
+    
+    # Parse all jobs
+    all_jobs = _parse_sacct_output(output)
+    total = len(all_jobs)
+    
+    # Apply pagination
+    jobs = all_jobs[offset:offset + per_page]
+    
+    return jsonify({
+        'jobs': jobs,
+        'total': total,
+        'page': page,
+        'per_page': per_page,
+        'total_pages': (total + per_page - 1) // per_page,
     })

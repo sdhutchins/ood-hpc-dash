@@ -19,6 +19,148 @@
     </div>
 </div>
 
+{# User's Running/Queued Jobs #}
+{% if username %}
+<div class="row mb-4">
+    <div class="col">
+        <div class="card shadow-sm mb-3">
+            <div class="card-header" style="background-color: var(--theme-bg-color);">
+                <h5 class="mb-0"><i class="fas fa-tasks me-2"></i>My Running/Queued Jobs</h5>
+            </div>
+            <div class="card-body p-0">
+                {% if user_jobs_error %}
+                <div class="alert alert-warning m-3 mb-0">
+                    <small>Error loading jobs: {{ user_jobs_error }}</small>
+                </div>
+                {% elif user_jobs %}
+                <div class="table-responsive">
+                    <table class="table table-hover table-sm mb-0">
+                        <thead style="background-color: var(--theme-bg-color);">
+                            <tr>
+                                <th>Job ID</th>
+                                <th>Name</th>
+                                <th>State</th>
+                                <th>Partition</th>
+                                <th>Time Used</th>
+                                <th>Time Limit</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for job in user_jobs %}
+                            <tr>
+                                <td><code>{{ job.id }}</code></td>
+                                <td>{{ job.name }}</td>
+                                <td>
+                                    {% if job.state in ['RUNNING', 'R'] %}
+                                        <span class="badge bg-success">Running</span>
+                                    {% elif job.state in ['PENDING', 'PD'] %}
+                                        <span class="badge bg-warning text-dark">Pending</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">{{ job.state }}</span>
+                                    {% endif %}
+                                </td>
+                                <td><code>{{ job.partition }}</code></td>
+                                <td><small>{{ job.time_used }}</small></td>
+                                <td><small>{{ job.time_limit }}</small></td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="alert alert-info m-3 mb-0">
+                    <small>No running or queued jobs.</small>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{# Job History #}
+<div class="row mb-4">
+    <div class="col">
+        <div class="card shadow-sm mb-3">
+            <div class="card-header" style="background-color: var(--theme-bg-color);">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="fas fa-history me-2"></i>Job History</h5>
+                    <button type="button" class="btn btn-sm" id="refreshHistoryBtn" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);">
+                        <i class="fas fa-sync-alt me-1"></i>Refresh
+                    </button>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                {% if history_error %}
+                <div class="alert alert-warning m-3 mb-0">
+                    <small>Error loading job history: {{ history_error }}</small>
+                </div>
+                {% elif job_history %}
+                <div class="table-responsive">
+                    <table class="table table-hover table-sm mb-0" id="historyTable">
+                        <thead style="background-color: var(--theme-bg-color);">
+                            <tr>
+                                <th>Job ID</th>
+                                <th>Name</th>
+                                <th>State</th>
+                                <th>Partition</th>
+                                <th>Elapsed</th>
+                                <th>CPUs</th>
+                                <th>Memory</th>
+                                <th>CPU Efficiency</th>
+                            </tr>
+                        </thead>
+                        <tbody id="historyTableBody">
+                            {% for job in job_history %}
+                            <tr>
+                                <td><code>{{ job.id }}</code></td>
+                                <td>{{ job.name }}</td>
+                                <td>
+                                    {% if job.state == 'COMPLETED' %}
+                                        <span class="badge bg-success">Completed</span>
+                                    {% elif job.state in ['FAILED', 'CANCELLED', 'TIMEOUT'] %}
+                                        <span class="badge bg-danger">{{ job.state }}</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">{{ job.state }}</span>
+                                    {% endif %}
+                                </td>
+                                <td><code>{{ job.partition }}</code></td>
+                                <td><small>{{ job.elapsed }}</small></td>
+                                <td><small>{{ job.alloc_cpus }}/{{ job.req_cpus }}</small></td>
+                                <td><small>{{ job.max_rss }}</small></td>
+                                <td>
+                                    {% if job.cpu_efficiency >= 80 %}
+                                        <span class="badge bg-success">{{ job.cpu_efficiency }}%</span>
+                                    {% elif job.cpu_efficiency >= 50 %}
+                                        <span class="badge bg-info">{{ job.cpu_efficiency }}%</span>
+                                    {% elif job.cpu_efficiency > 0 %}
+                                        <span class="badge bg-warning text-dark">{{ job.cpu_efficiency }}%</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">N/A</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="card-footer bg-white">
+                    <nav aria-label="Job history pagination">
+                        <ul class="pagination pagination-sm mb-0 justify-content-center" id="historyPagination">
+                            <!-- Pagination will be populated by JavaScript -->
+                        </ul>
+                    </nav>
+                </div>
+                {% else %}
+                <div class="alert alert-info m-3 mb-0">
+                    <small>No job history found.</small>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 {% if error %}
 <div class="alert alert-warning" role="alert">
     <strong>Warning:</strong> {{ error }}
@@ -325,6 +467,153 @@ function sortTable(columnIndex) {
             }
         }
     });
-}
+    
+    // Job history pagination
+    let currentPage = 1;
+    const perPage = 10;
+    
+    function loadJobHistory(page) {
+        fetch(`{{ url_for('jobs.jobs_history') }}?page=${page}&per_page=${perPage}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    console.error('Error loading job history:', data.error);
+                    return;
+                }
+                
+                currentPage = data.page;
+                const tbody = document.getElementById('historyTableBody');
+                if (!tbody) return;
+                
+                // Clear existing rows
+                tbody.innerHTML = '';
+                
+                // Add new rows
+                data.jobs.forEach(job => {
+                    const row = document.createElement('tr');
+                    
+                    // State badge
+                    let stateBadge = '';
+                    if (job.state === 'COMPLETED') {
+                        stateBadge = '<span class="badge bg-success">Completed</span>';
+                    } else if (['FAILED', 'CANCELLED', 'TIMEOUT'].includes(job.state)) {
+                        stateBadge = `<span class="badge bg-danger">${job.state}</span>`;
+                    } else {
+                        stateBadge = `<span class="badge bg-secondary">${job.state}</span>`;
+                    }
+                    
+                    // CPU efficiency badge
+                    let efficiencyBadge = '';
+                    if (job.cpu_efficiency >= 80) {
+                        efficiencyBadge = `<span class="badge bg-success">${job.cpu_efficiency}%</span>`;
+                    } else if (job.cpu_efficiency >= 50) {
+                        efficiencyBadge = `<span class="badge bg-info">${job.cpu_efficiency}%</span>`;
+                    } else if (job.cpu_efficiency > 0) {
+                        efficiencyBadge = `<span class="badge bg-warning text-dark">${job.cpu_efficiency}%</span>`;
+                    } else {
+                        efficiencyBadge = '<span class="badge bg-secondary">N/A</span>';
+                    }
+                    
+                    row.innerHTML = `
+                        <td><code>${job.id}</code></td>
+                        <td>${job.name}</td>
+                        <td>${stateBadge}</td>
+                        <td><code>${job.partition}</code></td>
+                        <td><small>${job.elapsed}</small></td>
+                        <td><small>${job.alloc_cpus}/${job.req_cpus}</small></td>
+                        <td><small>${job.max_rss}</small></td>
+                        <td>${efficiencyBadge}</td>
+                    `;
+                    tbody.appendChild(row);
+                });
+                
+                // Update pagination
+                updatePagination(data.total_pages, data.page);
+            })
+            .catch(error => {
+                console.error('Error loading job history:', error);
+            });
+    }
+    
+    function updatePagination(totalPages, currentPageNum) {
+        const pagination = document.getElementById('historyPagination');
+        if (!pagination) return;
+        
+        pagination.innerHTML = '';
+        
+        if (totalPages <= 1) {
+            return;
+        }
+        
+        // Previous button
+        const prevLi = document.createElement('li');
+        prevLi.className = `page-item ${currentPageNum === 1 ? 'disabled' : ''}`;
+        prevLi.innerHTML = `<a class="page-link" href="#" onclick="loadJobHistory(${currentPageNum - 1}); return false;">Previous</a>`;
+        pagination.appendChild(prevLi);
+        
+        // Page numbers
+        const startPage = Math.max(1, currentPageNum - 2);
+        const endPage = Math.min(totalPages, currentPageNum + 2);
+        
+        if (startPage > 1) {
+            const firstLi = document.createElement('li');
+            firstLi.className = 'page-item';
+            firstLi.innerHTML = `<a class="page-link" href="#" onclick="loadJobHistory(1); return false;">1</a>`;
+            pagination.appendChild(firstLi);
+            if (startPage > 2) {
+                const ellipsis = document.createElement('li');
+                ellipsis.className = 'page-item disabled';
+                ellipsis.innerHTML = '<span class="page-link">...</span>';
+                pagination.appendChild(ellipsis);
+            }
+        }
+        
+        for (let i = startPage; i <= endPage; i++) {
+            const li = document.createElement('li');
+            li.className = `page-item ${i === currentPageNum ? 'active' : ''}`;
+            li.innerHTML = `<a class="page-link" href="#" onclick="loadJobHistory(${i}); return false;">${i}</a>`;
+            pagination.appendChild(li);
+        }
+        
+        if (endPage < totalPages) {
+            if (endPage < totalPages - 1) {
+                const ellipsis = document.createElement('li');
+                ellipsis.className = 'page-item disabled';
+                ellipsis.innerHTML = '<span class="page-link">...</span>';
+                pagination.appendChild(ellipsis);
+            }
+            const lastLi = document.createElement('li');
+            lastLi.className = 'page-item';
+            lastLi.innerHTML = `<a class="page-link" href="#" onclick="loadJobHistory(${totalPages}); return false;">${totalPages}</a>`;
+            pagination.appendChild(lastLi);
+        }
+        
+        // Next button
+        const nextLi = document.createElement('li');
+        nextLi.className = `page-item ${currentPageNum === totalPages ? 'disabled' : ''}`;
+        nextLi.innerHTML = `<a class="page-link" href="#" onclick="loadJobHistory(${currentPageNum + 1}); return false;">Next</a>`;
+        pagination.appendChild(nextLi);
+    }
+    
+    // Refresh history button
+    const refreshHistoryBtn = document.getElementById('refreshHistoryBtn');
+    if (refreshHistoryBtn) {
+        refreshHistoryBtn.addEventListener('click', function() {
+            const icon = this.querySelector('i');
+            const originalClass = icon.className;
+            icon.className = 'fas fa-spinner fa-spin me-1';
+            this.disabled = true;
+            
+            loadJobHistory(currentPage);
+            
+            setTimeout(() => {
+                icon.className = originalClass;
+                this.disabled = false;
+            }, 1000);
+        });
+    }
+    
+    // Make loadJobHistory available globally for pagination links
+    window.loadJobHistory = loadJobHistory;
 </script>
 {% endblock %}
