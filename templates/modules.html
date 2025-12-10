@@ -40,12 +40,12 @@
 
 <div class="row">
     <div class="col">
-        <div id="loadingCard" class="card {% if modules and modules|length > 0 %}d-none{% endif %}">
+        <div id="loadingCard" class="card {% if modules and modules|length > 0 and not cache_empty %}d-none{% endif %}">
             <div class="card-body text-center py-5">
                 <div class="spinner-border text-primary" role="status">
                     <span class="visually-hidden">Loading...</span>
                 </div>
-                <p class="mt-3 text-muted">Loading modules...</p>
+                <p class="mt-3 text-muted" id="loadingMessage">Loading modules...</p>
             </div>
         </div>
         <div id="modulesCard" class="{% if not modules or modules|length == 0 %}d-none{% endif %}">
@@ -126,39 +126,144 @@
         let allModules = {% if modules %}{{ modules|tojson|safe }}{% else %}[]{% endif %};
         let categoryOrder = {% if category_order %}{{ category_order|tojson|safe }}{% else %}[]{% endif %};
         
-        {% if not modules or modules|length == 0 %}
-        // Poll for modules if page loaded empty
-        function fetchModules() {
-            fetch('{{ url_for("modules.modules_list") }}')
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    if (data.loading) {
-                        setTimeout(fetchModules, 2000);
-                    } else if (data.modules && data.modules.length > 0) {
-                        allModules = data.modules;
-                        categoryOrder = data.category_order || [];
-                        document.getElementById('loadingCard').classList.add('d-none');
-                        document.getElementById('modulesCard').classList.remove('d-none');
-                        const countEl = document.getElementById('uniqueCount');
-                        if (countEl) {
-                            countEl.textContent = data.unique_count || data.modules.length;
+        {% if cache_empty or not modules or modules|length == 0 %}
+        // Start streaming modules if cache is empty or no modules loaded
+        function startStreamingModules() {
+            // Show loading state
+            document.getElementById('loadingCard').classList.remove('d-none');
+            document.getElementById('modulesCard').classList.add('d-none');
+            
+            // Clear table
+            const tbody = document.getElementById('modulesTableBody');
+            if (tbody) {
+                tbody.innerHTML = '';
+            }
+            allModules = [];
+            
+            // Start refresh process
+            fetch('{{ url_for("modules.refresh_start") }}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Failed to start refresh');
+                }
+                
+                // Create EventSource for streaming (GET endpoint)
+                const eventSource = new EventSource('{{ url_for("modules.refresh_modules") }}');
+                
+                let moduleCount = 0;
+                const collectedModules = [];
+                
+                eventSource.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        
+                        if (data.type === 'progress') {
+                            // Update loading message
+                            const loadingMessage = document.getElementById('loadingMessage');
+                            if (loadingMessage) {
+                                if (data.current !== undefined && data.total !== undefined) {
+                                    loadingMessage.textContent = `${data.message || 'Loading modules'} (${data.current}/${data.total})`;
+                                } else {
+                                    loadingMessage.textContent = data.message || 'Loading modules...';
+                                }
+                            }
+                            console.log(data.message);
+                        } else if (data.type === 'module') {
+                            // Show table when first module arrives
+                            if (moduleCount === 0) {
+                                document.getElementById('loadingCard').classList.add('d-none');
+                                document.getElementById('modulesCard').classList.remove('d-none');
+                            }
+                            
+                            // Add module to collection and display immediately
+                            collectedModules.push(data.module);
+                            allModules.push(data.module);
+                            moduleCount++;
+                            
+                            // Add module row to table immediately
+                            if (tbody) {
+                                const row = document.createElement('tr');
+                                row.className = 'module-row';
+                                row.setAttribute('data-category', data.module.category || 'Misc');
+                                
+                                const nameCell = document.createElement('td');
+                                nameCell.innerHTML = '<code>' + escapeHtml(data.module.name) + '</code>';
+                                
+                                const descCell = document.createElement('td');
+                                if (data.module.description) {
+                                    descCell.innerHTML = '<small class="text-muted">' + escapeHtml(data.module.description) + '</small>';
+                                } else {
+                                    descCell.innerHTML = '<span class="text-muted">-</span>';
+                                }
+                                
+                                const versionsCell = document.createElement('td');
+                                if (data.module.versions && data.module.versions.length > 0) {
+                                    versionsCell.innerHTML = data.module.versions.map(v => 
+                                        '<button type="button" class="btn btn-sm copy-version me-1 mb-1" data-version="' + escapeHtml(v) + '" title="Click to copy: module load ' + escapeHtml(v) + '" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);"><i class="fa-regular fa-copy me-1"></i><code class="text-reset">' + escapeHtml(v) + '</code></button>'
+                                    ).join('');
+                                } else {
+                                    versionsCell.innerHTML = '<span class="text-muted">-</span>';
+                                }
+                                
+                                row.appendChild(nameCell);
+                                row.appendChild(descCell);
+                                row.appendChild(versionsCell);
+                                tbody.appendChild(row);
+                                
+                                // Wire up copy handlers for new buttons
+                                attachCopyHandlers();
+                            }
+                            
+                            // Update count
+                            const countEl = document.getElementById('uniqueCount');
+                            if (countEl) {
+                                countEl.textContent = moduleCount;
+                            }
+                            
+                            // Apply current filters
+                            applyFilters();
+                        } else if (data.type === 'complete') {
+                            // Refresh complete
+                            eventSource.close();
+                            
+                            // Update category filter with all collected modules
+                            const categories = new Set();
+                            collectedModules.forEach(m => categories.add(m.category));
+                            populateCategoryFilter(Array.from(categories).sort());
+                            
+                            console.log(data.message);
+                        } else if (data.type === 'error') {
+                            // Error occurred
+                            eventSource.close();
+                            alert('Error: ' + data.message);
+                            document.getElementById('loadingCard').classList.remove('d-none');
+                            document.getElementById('modulesCard').classList.add('d-none');
                         }
-                        displayModules(data.modules);
-                        populateCategoryFilter(categoryOrder);
+                    } catch (error) {
+                        console.error('Error parsing SSE data:', error);
                     }
-                })
-                .catch(error => {
-                    console.error('Error fetching modules:', error);
-                    setTimeout(fetchModules, 2000);
-                });
+                };
+                
+                eventSource.onerror = function(error) {
+                    console.error('EventSource error:', error);
+                    eventSource.close();
+                    alert('Connection error while loading modules.');
+                    document.getElementById('loadingCard').classList.remove('d-none');
+                    document.getElementById('modulesCard').classList.add('d-none');
+                };
+            })
+            .catch(error => {
+                console.error('Error starting module stream:', error);
+                alert('Failed to start loading modules. Please try again.');
+            });
         }
         
-        fetchModules();
+        startStreamingModules();
         {% else %}
         // Populate category filter if modules are already loaded
         populateCategoryFilter(categoryOrder);

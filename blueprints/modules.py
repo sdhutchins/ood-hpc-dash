@@ -617,7 +617,8 @@ def _clear_modules_cache():
 @modules_bp.route('/')
 def modules():
     """Render the modules page."""
-    grouped_modules = _get_cached_modules()
+    # Check if cache exists - if not, page will start streaming
+    grouped_modules = _get_cached_modules() if _modules_cache is not None else []
     unique_count = len(grouped_modules)
     
     # Group modules by category for display
@@ -639,7 +640,8 @@ def modules():
         modules=grouped_modules,
         modules_by_category=modules_by_category,
         category_order=category_order,
-        unique_count=unique_count
+        unique_count=unique_count,
+        cache_empty=_modules_cache is None
     )
 
 @modules_bp.route('/list')
