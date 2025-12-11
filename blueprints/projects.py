@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # Third-party imports
-from flask import Blueprint, jsonify, render_template
+from flask import Blueprint, jsonify, render_template, request
 
 # Local imports
 from utils import expand_path, find_binary, load_settings
@@ -676,22 +676,45 @@ def _load_projects_cache() -> Optional[Dict[str, Any]]:
         Cache dict with 'timestamp', 'directories', and 'projects', or None if invalid
     """
     if not PROJECTS_CACHE_FILE.exists():
+        logger.debug("Projects cache file does not exist")
         return None
     
     try:
         with PROJECTS_CACHE_FILE.open('r', encoding='utf-8') as f:
             cache = json.load(f)
         
+        # Validate cache structure
+        if not isinstance(cache, dict):
+            logger.warning("Projects cache is not a dictionary")
+            return None
+        
+        if 'timestamp' not in cache or 'projects' not in cache or 'directories' not in cache:
+            logger.warning("Projects cache missing required fields")
+            return None
+        
         # Check if cache is still valid (less than 1 hour old)
         cache_age = time.time() - cache.get('timestamp', 0)
+        if cache_age < 0:
+            logger.warning(f"Projects cache has invalid timestamp (future time)")
+            return None
+        
         if cache_age > CACHE_VALIDITY_SECONDS:
             logger.info(f"Projects cache expired (age: {cache_age:.0f}s)")
             return None
         
-        logger.info(f"Loaded projects cache (age: {cache_age:.0f}s, {len(cache.get('projects', []))} projects)")
+        # Validate projects data
+        projects = cache.get('projects', [])
+        if not isinstance(projects, list):
+            logger.warning("Projects cache 'projects' field is not a list")
+            return None
+        
+        logger.info(f"Loaded projects cache (age: {cache_age:.0f}s, {len(projects)} projects)")
         return cache
+    except json.JSONDecodeError as e:
+        logger.warning(f"Error parsing projects cache JSON: {e}")
+        return None
     except Exception as e:
-        logger.warning(f"Error loading projects cache: {e}")
+        logger.warning(f"Error loading projects cache: {e}", exc_info=True)
         return None
 
 
@@ -744,30 +767,49 @@ def _collect_projects_data(project_dirs: List[str], use_cache: bool = True) -> T
                 new_dirs = [d for d in normalized_dirs if d not in cached_dirs]
                 if not new_dirs:
                     # All directories are cached and no new ones - return cache
-                    logger.info(f"Using cached projects data: {len(cached_data.get('projects', []))} projects")
-                    return cached_data.get('projects', []), None
+                    cached_projects = cached_data.get('projects', [])
+                    logger.info(f"Using cached projects data: {len(cached_projects)} projects")
+                    # Ensure cached projects are valid (have required keys)
+                    valid_projects = [p for p in cached_projects if isinstance(p, dict) and 'path' in p]
+                    if len(valid_projects) != len(cached_projects):
+                        logger.warning(f"Filtered {len(cached_projects) - len(valid_projects)} invalid projects from cache")
+                    return valid_projects, None
                 else:
                     # Some new directories - scan only those and merge
                     logger.info(f"Cache found for {len(cached_dirs)} directories, scanning {len(new_dirs)} new directories")
                     cached_projects = cached_data.get('projects', [])
+                    # Ensure cached projects are valid
+                    cached_projects = [p for p in cached_projects if isinstance(p, dict) and 'path' in p]
                     # Scan new directories
-                    new_projects_data, new_error = _scan_directories(new_dirs)
-                    # Merge: combine cached and new, remove duplicates by path
-                    all_projects = {p['path']: p for p in cached_projects}
-                    all_projects.update({p['path']: p for p in new_projects_data})
-                    merged_projects = list(all_projects.values())
-                    merged_projects.sort(key=lambda x: x['name'].lower())
-                    # Save updated cache
-                    _save_projects_cache(merged_projects, normalized_dirs)
-                    logger.info(f"Merged cache with new scan: {len(merged_projects)} total projects")
-                    return merged_projects, new_error
+                    try:
+                        new_projects_data, new_error = _scan_directories(new_dirs)
+                        # Merge: combine cached and new, remove duplicates by path
+                        all_projects = {p['path']: p for p in cached_projects}
+                        all_projects.update({p['path']: p for p in new_projects_data})
+                        merged_projects = list(all_projects.values())
+                        merged_projects.sort(key=lambda x: x['name'].lower())
+                        # Save updated cache
+                        _save_projects_cache(merged_projects, normalized_dirs)
+                        logger.info(f"Merged cache with new scan: {len(merged_projects)} total projects")
+                        return merged_projects, new_error
+                    except Exception as e:
+                        logger.error(f"Error scanning new directories: {e}", exc_info=True)
+                        # Return cached data if new scan fails
+                        return cached_projects, f"Error scanning new directories: {str(e)}"
     
     # No valid cache or cache disabled - scan all directories
     logger.info(f"Scanning {len(normalized_dirs)} directories (cache miss or disabled)")
-    projects_data, error = _scan_directories(normalized_dirs)
-    if projects_data:
-        _save_projects_cache(projects_data, normalized_dirs)
-    return projects_data, error
+    try:
+        projects_data, error = _scan_directories(normalized_dirs)
+        if projects_data:
+            try:
+                _save_projects_cache(projects_data, normalized_dirs)
+            except Exception as cache_err:
+                logger.warning(f"Failed to save cache: {cache_err}")
+        return projects_data, error
+    except Exception as e:
+        logger.error(f"Error in _collect_projects_data: {e}", exc_info=True)
+        return [], f"Error collecting projects data: {str(e)}"
 
 
 def _scan_directories(project_dirs: List[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
@@ -898,17 +940,28 @@ def projects_status():
         logger.info(f"Processing {len(project_dirs)} project directories: {project_dirs}")
         # Check if refresh was requested (force cache refresh)
         force_refresh = request.args.get('refresh', '').lower() == 'true'
-        projects_data, error = _collect_projects_data(project_dirs, use_cache=not force_refresh)
+        
+        try:
+            projects_data, error = _collect_projects_data(project_dirs, use_cache=not force_refresh)
+        except Exception as collect_err:
+            logger.error(f"Error in _collect_projects_data: {collect_err}", exc_info=True)
+            return jsonify({
+                'projects': [],
+                'total': 0,
+                'error': f'Error collecting projects: {str(collect_err)}',
+            }), 500
         
         # Ensure all data is JSON-serializable
         try:
+            # Use CustomJsonEncoder for Path and datetime objects
+            from utils import CustomJsonEncoder
             response_data = {
                 'projects': projects_data,
                 'total': len(projects_data),
                 'error': error,
             }
             # Test serialization
-            json.dumps(response_data)
+            json.dumps(response_data, cls=CustomJsonEncoder)
         except (TypeError, ValueError) as json_err:
             logger.error(f"JSON serialization error: {json_err}", exc_info=True)
             return jsonify({
