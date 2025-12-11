@@ -74,20 +74,31 @@ def _call_git_status_checker(
     Returns:
         Tuple of (parsed_json_data, error_message)
     """
+    logger.info(f"Starting git-status-checker scan for directories: {base_dirs}")
+    
     git_checker = _find_git_status_checker()
     if not git_checker:
+        logger.warning("git-status-checker not found in PATH")
         return None, "git-status-checker not found. Install with: pip install git+https://github.com/sdhutchins/git-status-checker.git"
+    
+    logger.info(f"Using git-status-checker at: {git_checker}")
     
     # Expand user paths and environment variables
     expanded_dirs = []
     for dir_path in base_dirs:
         expanded = os.path.expandvars(os.path.expanduser(dir_path))
         expanded_path = Path(expanded)
+        logger.info(f"Checking directory: {dir_path} -> {expanded_path} (exists: {expanded_path.exists()})")
         if expanded_path.exists():
             expanded_dirs.append(str(expanded_path))
+        else:
+            logger.warning(f"Directory does not exist: {expanded_path}")
     
     if not expanded_dirs:
+        logger.error("No valid project directories found after expansion")
         return None, "No valid project directories found in configuration"
+    
+    logger.info(f"Scanning {len(expanded_dirs)} directories: {expanded_dirs}")
     
     # Build command with --json flag
     cmd = [git_checker, '--json', '--recursive', '--check-fetch']
@@ -96,6 +107,8 @@ def _call_git_status_checker(
     
     # Add base directories
     cmd.extend(expanded_dirs)
+    
+    logger.debug(f"Running command: {' '.join(cmd)}")
     
     try:
         result = subprocess.run(
@@ -108,27 +121,45 @@ def _call_git_status_checker(
             check=False,  # Don't raise on non-zero exit
         )
         
-        # git-status-checker returns exit code 1 if repos are outdated, 0 if all up-to-date
-        # Exit code 127 means no git repos found
+        logger.info(f"git-status-checker exit code: {result.returncode}")
+        logger.debug(f"git-status-checker stdout: {result.stdout[:500]}")  # First 500 chars
+        if result.stderr:
+            logger.debug(f"git-status-checker stderr: {result.stderr[:500]}")
+        
+        # git-status-checker returns:
+        # - exit code 0: all repos up-to-date
+        # - exit code 1: some repos outdated (but repos were found)
+        # - exit code 127: command not found or no git repos found
+        # We treat exit code 127 as "no repos found" but don't treat it as a fatal error
+        # since we can fall back to manual scanning
         if result.returncode == 127:
-            return None, "No git repositories found in configured directories"
+            logger.warning("git-status-checker returned exit code 127 (no git repos found or command issue)")
+            # Return empty result instead of error - let fallback handle it
+            return {"repositories": [], "total": 0, "outdated": 0}, None
         
         # Parse JSON output
         output = result.stdout.strip()
         if not output:
+            logger.info("git-status-checker returned empty output")
             # Empty output might mean no repos found or all up-to-date
             return {"repositories": [], "total": 0, "outdated": 0}, None
         
         try:
             data = json.loads(output)
+            repo_count = len(data.get('repositories', []))
+            logger.info(f"Successfully parsed JSON: found {repo_count} repositories")
             return data, None
         except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON output: {e}")
+            logger.error(f"Output was: {output[:1000]}")
             error_msg = result.stderr if result.stderr else f"Failed to parse JSON: {e}"
             return None, f"git-status-checker JSON parse error: {error_msg}"
         
     except subprocess.TimeoutExpired:
+        logger.error("git-status-checker timed out after 120 seconds")
         return None, "git-status-checker timed out after 120 seconds"
     except Exception as e:
+        logger.error(f"Exception calling git-status-checker: {e}", exc_info=True)
         return None, f"Error calling git-status-checker: {str(e)}"
 
 
@@ -329,24 +360,40 @@ def _find_git_repos(base_dirs: List[str]) -> List[Path]:
         List of Path objects pointing to git repositories
     """
     repos = []
+    logger.info(f"Scanning for git repositories in: {base_dirs}")
+    
     for base_dir in base_dirs:
         expanded = os.path.expandvars(os.path.expanduser(base_dir))
         base_path = Path(expanded)
+        logger.info(f"Checking base directory: {base_dir} -> {base_path} (exists: {base_path.exists()})")
+        
         if not base_path.exists():
+            logger.warning(f"Base directory does not exist: {base_path}")
+            continue
+        
+        # Check if the base directory itself is a git repo
+        if (base_path / '.git').exists():
+            logger.info(f"Found git repo at base directory: {base_path}")
+            repos.append(base_path)
             continue
         
         # Walk directory tree looking for .git directories
+        repo_count_before = len(repos)
         for root, dirs, files in os.walk(base_path):
-            # Skip hidden directories
-            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            # Skip hidden directories (except .git)
+            dirs[:] = [d for d in dirs if not d.startswith('.') or d == '.git']
             
             if '.git' in dirs:
                 repo_path = Path(root)
+                logger.debug(f"Found git repository: {repo_path}")
                 repos.append(repo_path)
                 # Don't recurse into subdirectories of a git repo
                 dirs.remove('.git')
                 dirs.clear()  # Stop recursion
+        
+        logger.info(f"Found {len(repos) - repo_count_before} repositories in {base_path}")
     
+    logger.info(f"Total repositories found: {len(repos)}")
     return repos
 
 
@@ -601,21 +648,62 @@ def _check_drift_and_footprint(repo_path: Path) -> Dict[str, Any]:
 @projects_bp.route('/')
 def projects():
     """Render the projects page with monitoring information."""
+    logger.info("Projects page accessed")
     settings = _load_settings()
     project_dirs = settings.get(PROJECT_DIRS_CONFIG_KEY, [])
+    logger.info(f"Loaded project directories from settings: {project_dirs}")
+    
+    if not project_dirs:
+        logger.warning("No project directories configured")
+        return render_template(
+            'projects.html',
+            projects=[],
+            project_dirs=[],
+            total_repos=0,
+            git_status_error="No project directories configured. Please configure them in Settings.",
+        )
     
     # Get git status from git-status-checker
     git_status_data, error = _call_git_status_checker(project_dirs)
     
+    projects_data = []
+    use_fallback = False
+    
+    # Determine if we should use git-status-checker results or fallback
     if error:
-        logger.warning(f"Error calling git-status-checker: {error}")
-        # Fall back to manual scanning if git-status-checker fails
+        logger.warning(f"git-status-checker error: {error}, using fallback")
+        use_fallback = True
+    elif not git_status_data:
+        logger.info("git-status-checker returned no data, using fallback")
+        use_fallback = True
+    else:
+        repositories = git_status_data.get('repositories', [])
+        if not repositories:
+            logger.info("git-status-checker found no repositories, using fallback to verify")
+            use_fallback = True
+        else:
+            logger.info(f"Using git-status-checker results: {len(repositories)} repositories")
+    
+    if use_fallback:
+        # Fall back to manual scanning
         repos = _find_git_repos(project_dirs)
-        projects_data = []
+        logger.info(f"Found {len(repos)} repositories via manual scan")
+        
+        if not repos:
+            logger.warning("No git repositories found in any configured directory")
+            return render_template(
+                'projects.html',
+                projects=[],
+                project_dirs=project_dirs,
+                total_repos=0,
+                git_status_error=f"No git repositories found. Checked directories: {', '.join(project_dirs)}",
+            )
+        
         for repo_path in repos:
-            # Use fallback _get_git_info if needed (keeping old implementation)
+            logger.debug(f"Processing repository: {repo_path}")
             git_info = _get_git_info_fallback(repo_path)
             if not git_info:
+                logger.warning(f"Could not get git info for {repo_path}")
                 continue
             
             repro_health = _check_reproducibility_health(repo_path)
@@ -631,11 +719,15 @@ def projects():
     else:
         # Use git-status-checker JSON data
         repositories = git_status_data.get('repositories', [])
-        projects_data = []
+        logger.info(f"Processing {len(repositories)} repositories from git-status-checker")
         
         for repo_status in repositories:
-            repo_path = Path(repo_status.get('path', ''))
+            repo_path_str = repo_status.get('path', '')
+            repo_path = Path(repo_path_str)
+            logger.debug(f"Processing repository from git-status-checker: {repo_path}")
+            
             if not repo_path.exists():
+                logger.warning(f"Repository path does not exist: {repo_path}")
                 continue
             
             git_info = _get_git_info_from_status_checker(repo_status, repo_path)
@@ -652,6 +744,7 @@ def projects():
     
     # Sort by name
     projects_data.sort(key=lambda x: x['name'].lower())
+    logger.info(f"Returning {len(projects_data)} projects to template")
     
     return render_template(
         'projects.html',
