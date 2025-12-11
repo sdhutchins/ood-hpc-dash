@@ -47,7 +47,7 @@
   <div class="card mb-4 shadow-sm" style="border-radius: 10px;">
     <div class="card-body">
       <label for="project_directories" class="form-label fw-semibold">Project Directories</label>
-      <textarea class="form-control mb-2" id="project_directories" name="project_directories" rows="3"
+      <textarea class="form-control mb-2 font-monospace small" id="project_directories" name="project_directories" rows="4"
                 placeholder="$HOME/Documents/Git-Repos&#10;$HOME/Dev/src-repos">{% if settings.project_directories %}{{ settings.project_directories|join('\n') }}{% endif %}</textarea>
       <div class="form-text">One path per line. Base directories to scan for git repositories. Environment variables like $HOME are allowed.</div>
     </div>
