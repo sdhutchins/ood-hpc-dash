@@ -2,12 +2,23 @@
 import json
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 SETTINGS_FILE = Path('config/settings.json')
+
+
+class CustomJsonEncoder(json.JSONEncoder):
+    """Custom JSON encoder to handle Path and datetime objects."""
+    def default(self, obj):
+        if isinstance(obj, Path):
+            return str(obj)
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return json.JSONEncoder.default(self, obj)
 
 
 def load_settings() -> Dict[str, Any]:

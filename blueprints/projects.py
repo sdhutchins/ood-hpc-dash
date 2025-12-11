@@ -650,23 +650,57 @@ def _process_repo(repo_path: Path, repo_status: Optional[Dict[str, Any]] = None)
     Returns:
         Project data dict or None if processing fails
     """
-    if not repo_path.exists():
-        logger.warning(f"Repository path does not exist: {repo_path}")
+    try:
+        if not repo_path.exists():
+            logger.warning(f"Repository path does not exist: {repo_path}")
+            return None
+        
+        git_info = (_get_git_info_from_status_checker(repo_status, repo_path) 
+                    if repo_status else _get_git_info_fallback(repo_path))
+        
+        if not git_info:
+            logger.warning(f"Could not get git info for {repo_path}")
+            return None
+        
+        # Ensure path is a string, not a Path object
+        if isinstance(git_info.get('path'), Path):
+            git_info['path'] = str(git_info['path'])
+        
+        # Get reproducibility and drift data with error handling
+        try:
+            reproducibility = _check_reproducibility_health(repo_path)
+        except Exception as e:
+            logger.warning(f"Error checking reproducibility for {repo_path}: {e}")
+            reproducibility = {
+                'environment_files': [],
+                'workflow_configs': [],
+                'missing_common_files': [],
+                'staleness': {},
+            }
+        
+        try:
+            drift_footprint = _check_drift_and_footprint(repo_path)
+        except Exception as e:
+            logger.warning(f"Error checking drift/footprint for {repo_path}: {e}")
+            drift_footprint = {
+                'directory_size': 0,
+                'git_size': 0,
+                'last_modified': None,
+                'last_commit': None,
+                'drift_days': None,
+                'large_untracked_files': [],
+            }
+        
+        return {
+            'name': git_info['name'],
+            'path': str(repo_path),  # Ensure path is always a string
+            'git': git_info,
+            'reproducibility': reproducibility,
+            'drift_footprint': drift_footprint,
+        }
+    except Exception as e:
+        logger.error(f"Error processing repository {repo_path}: {e}", exc_info=True)
         return None
-    
-    git_info = (_get_git_info_from_status_checker(repo_status, repo_path) 
-                if repo_status else _get_git_info_fallback(repo_path))
-    
-    if not git_info:
-        return None
-    
-    return {
-        'name': git_info['name'],
-        'path': git_info['path'],
-        'git': git_info,
-        'reproducibility': _check_reproducibility_health(repo_path),
-        'drift_footprint': _check_drift_and_footprint(repo_path),
-    }
 
 
 def _load_projects_cache() -> Optional[Dict[str, Any]]:
@@ -953,24 +987,38 @@ def projects_status():
         
         # Ensure all data is JSON-serializable
         try:
-            # Use CustomJsonEncoder for Path and datetime objects
             from utils import CustomJsonEncoder
+            from flask import Response
+            
             response_data = {
                 'projects': projects_data,
                 'total': len(projects_data),
                 'error': error,
             }
-            # Test serialization
-            json.dumps(response_data, cls=CustomJsonEncoder)
+            # Serialize with custom encoder to handle Path and datetime objects
+            json_str = json.dumps(response_data, cls=CustomJsonEncoder, ensure_ascii=False)
+            return Response(json_str, mimetype='application/json'), 200
         except (TypeError, ValueError) as json_err:
             logger.error(f"JSON serialization error: {json_err}", exc_info=True)
+            # Log the problematic data for debugging
+            try:
+                if projects_data:
+                    sample = projects_data[0]
+                    logger.error(f"Problematic project data sample (first project): {sample.get('name', 'unknown')}")
+                    logger.error(f"Sample keys: {list(sample.keys())}")
+                    # Try to identify the problematic field
+                    for key, value in sample.items():
+                        try:
+                            json.dumps({key: value}, cls=CustomJsonEncoder)
+                        except Exception as field_err:
+                            logger.error(f"Field '{key}' is not JSON serializable: {field_err}, type: {type(value)}")
+            except Exception as log_err:
+                logger.error(f"Error logging problematic data: {log_err}")
             return jsonify({
                 'projects': [],
                 'total': 0,
                 'error': f'Data serialization error: {str(json_err)}',
             }), 500
-        
-        return jsonify(response_data), 200
     except Exception as e:
         logger.error(f"Error in projects_status endpoint: {e}", exc_info=True)
         return jsonify({
