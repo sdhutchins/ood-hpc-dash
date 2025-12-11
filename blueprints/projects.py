@@ -180,9 +180,11 @@ def _get_git_info_from_status_checker(
         'up_to_date': repo_status.get('up_to_date', True),
         'has_remote_changes': repo_status.get('has_remote_changes', False),
         'local_changes': repo_status.get('local_changes', []),
+        'fetch_error': None,  # Track if remote fetch failed
     }
     
     # Get additional info using git commands (branch, last commit, remote)
+    # These commands don't require remote access, so they should work even if fetch failed
     try:
         # Get current branch
         result = subprocess.run(
@@ -221,8 +223,13 @@ def _get_git_info_from_status_checker(
         if result.returncode == 0:
             git_info['remote'] = result.stdout.strip()
         
+    except (PermissionError, OSError) as e:
+        # Permission errors - log but continue with available data
+        logger.debug(f"Permission error getting git info for {repo_path}: {e}")
+        git_info['fetch_error'] = 'Permission denied'
     except Exception as e:
         logger.warning(f"Error getting additional git info for {repo_path}: {e}")
+        git_info['fetch_error'] = str(e)
     
     return git_info
 
@@ -698,6 +705,10 @@ def _process_repo(repo_path: Path, repo_status: Optional[Dict[str, Any]] = None)
             'reproducibility': reproducibility,
             'drift_footprint': drift_footprint,
         }
+    except (PermissionError, OSError) as e:
+        # Permission/authentication errors - skip this repo
+        logger.warning(f"Skipping repository {repo_path} due to permission/authentication error: {e}")
+        return None
     except Exception as e:
         logger.error(f"Error processing repository {repo_path}: {e}", exc_info=True)
         return None
@@ -866,19 +877,38 @@ def _scan_directories(project_dirs: List[str]) -> Tuple[List[Dict[str, Any]], Op
     # Use git-status-checker results if available
     if git_status_data and repositories:
         logger.info(f"Using git-status-checker results: {len(repositories)} repositories")
+        skipped_repos = []
         for repo_status in repositories:
             try:
                 repo_path_str = repo_status.get('path', '')
                 repo_path = Path(repo_path_str)
-                if repo_path.exists():
-                    project = _process_repo(repo_path, repo_status)
-                    if project:
-                        projects_data.append(project)
-                else:
+                if not repo_path.exists():
                     logger.warning(f"Repository path does not exist: {repo_path}")
+                    skipped_repos.append(str(repo_path))
+                    continue
+                
+                project = _process_repo(repo_path, repo_status)
+                if project:
+                    projects_data.append(project)
+                else:
+                    # _process_repo returns None for various reasons - log but don't treat as error
+                    logger.debug(f"Skipped processing repository {repo_path} (returned None)")
+                    skipped_repos.append(str(repo_path))
+            except (PermissionError, OSError) as e:
+                # Permission/authentication errors - skip this repo but continue
+                repo_name = repo_status.get('path', 'unknown')
+                logger.warning(f"Skipping repository {repo_name} due to permission/authentication error: {e}")
+                skipped_repos.append(repo_name)
             except Exception as e:
-                logger.warning(f"Error processing repository {repo_status.get('path', 'unknown')}: {e}")
-                errors.append(f"Error processing {repo_status.get('path', 'unknown')}: {str(e)}")
+                # Other errors - log but continue processing
+                repo_name = repo_status.get('path', 'unknown')
+                logger.warning(f"Error processing repository {repo_name}: {e}")
+                skipped_repos.append(repo_name)
+        
+        if skipped_repos:
+            logger.info(f"Skipped {len(skipped_repos)} repositories: {', '.join(skipped_repos[:5])}{'...' if len(skipped_repos) > 5 else ''}")
+            if len(errors) == 0:
+                errors.append(f"Skipped {len(skipped_repos)} repository/repositories (permission errors or processing issues)")
     else:
         # Fallback to manual scanning
         if git_error and git_error != "No git repositories found in configured directories":
@@ -888,14 +918,28 @@ def _scan_directories(project_dirs: List[str]) -> Tuple[List[Dict[str, Any]], Op
         repos = _find_git_repos(project_dirs)
         if repos:
             logger.info(f"Found {len(repos)} repositories via manual scan")
+            skipped_repos = []
             for repo_path in repos:
                 try:
                     project = _process_repo(repo_path)
                     if project:
                         projects_data.append(project)
+                    else:
+                        logger.debug(f"Skipped processing repository {repo_path} (returned None)")
+                        skipped_repos.append(str(repo_path))
+                except (PermissionError, OSError) as e:
+                    # Permission/authentication errors - skip this repo but continue
+                    logger.warning(f"Skipping repository {repo_path} due to permission/authentication error: {e}")
+                    skipped_repos.append(str(repo_path))
                 except Exception as e:
+                    # Other errors - log but continue processing
                     logger.warning(f"Error processing repository {repo_path}: {e}")
-                    errors.append(f"Error processing {repo_path}: {str(e)}")
+                    skipped_repos.append(str(repo_path))
+            
+            if skipped_repos:
+                logger.info(f"Skipped {len(skipped_repos)} repositories: {', '.join(skipped_repos[:5])}{'...' if len(skipped_repos) > 5 else ''}")
+                if len(errors) == 0:
+                    errors.append(f"Skipped {len(skipped_repos)} repository/repositories (permission errors or processing issues)")
         else:
             if not projects_data:
                 return [], f"No git repositories found. Checked directories: {', '.join(project_dirs)}"

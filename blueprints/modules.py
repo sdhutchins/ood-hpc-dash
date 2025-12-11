@@ -880,42 +880,52 @@ def refresh_modules():
 
 @modules_bp.route('/descriptions-stream')
 def stream_descriptions():
-    """Stream descriptions for cached modules without clearing cache."""
+    """Stream descriptions for all module families, using cache when available.
+    Fetches descriptions for ALL families from module -t spider, not just cached ones.
+    Only fetches new descriptions and appends them to the static cache."""
     global _streaming_in_progress
     
     def generate():
         global _streaming_in_progress
         try:
-            # Get cached modules
-            if _modules_cache is None or len(_modules_cache) == 0:
-                yield f"data: {json.dumps({'type': 'error', 'message': 'No cached modules'})}\n\n"
+            # Get ALL module families from module -t spider (not just cached ones)
+            # This ensures we check all families against cache and only fetch new ones
+            yield f"data: {json.dumps({'type': 'progress', 'message': 'Fetching all module families...', 'total': 0, 'current': 0})}\n\n"
+            
+            output, error = _call_module_command('module -t spider', timeout=60)
+            if error:
+                yield f"data: {json.dumps({'type': 'error', 'message': f'Failed to get module list: {error}'})}\n\n"
                 return
             
-            # Extract family names from cached modules
-            families = []
-            module_name_map = {}  # Map base_name -> family_name for lookup
+            if not output or not output.strip():
+                yield f"data: {json.dumps({'type': 'error', 'message': 'module -t spider returned empty output'})}\n\n"
+                return
             
-            # We need to reverse-engineer family names from cached modules
-            # Since we have versions, we can extract family names
-            for module in _modules_cache:
-                if module['versions'] and len(module['versions']) > 0:
-                    # Get first version to determine family
-                    first_version = module['versions'][0]
+            # Parse all modules to get ALL families
+            modules_dict = _parse_module_spider_output(output)
+            all_families = sorted(modules_dict.keys())
+            
+            # Build module name map from parsed data (same logic as in _get_all_modules_two_stage_streaming)
+            module_name_map = {}
+            categories_config = _load_categories()
+            for family_name in all_families:
+                versions = sorted(modules_dict[family_name], key=_natural_sort_key)
+                if versions:
+                    first_version = versions[0]
                     if '/' in first_version:
                         parts = first_version.split('/')
                         if len(parts) > 2:
-                            family_name = '/'.join(parts[:-1])
+                            base_name = '/'.join(parts[:-1])
                         else:
-                            family_name = parts[0]
+                            base_name = parts[0]
                     else:
-                        family_name = module['name']
-                    
-                    if family_name not in families:
-                        families.append(family_name)
-                        module_name_map[family_name] = module['name']
+                        base_name = family_name
+                else:
+                    base_name = family_name
+                module_name_map[family_name] = base_name
             
-            total_families = len(families)
-            yield f"data: {json.dumps({'type': 'descriptions_start', 'message': 'Loading descriptions...'})}\n\n"
+            total_families = len(all_families)
+            yield f"data: {json.dumps({'type': 'descriptions_start', 'message': f'Loading descriptions for {total_families} module families...'})}\n\n"
             
             # Load descriptions cache
             descriptions_cache = _load_descriptions_cache()
@@ -954,7 +964,7 @@ def stream_descriptions():
             
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_family = {executor.submit(fetch_description, family_name): family_name 
-                                   for family_name in families}
+                                   for family_name in all_families}
                 
                 for future in as_completed(future_to_family):
                     family_name = future_to_family[future]
