@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -130,6 +131,9 @@ def _call_sacct(user: Optional[str] = None, max_jobs: int = 100) -> Tuple[Option
     if not user:
         user = os.environ.get('USER', '')
     
+    # Calculate date 30 days ago in YYYY-MM-DD format
+    start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+    
     # Format: JobID,JobName,State,Partition,Start,End,Elapsed,TotalCPU,ReqCPUS,MaxRSS,AllocCPUS,CPUTime,CPUUtilization
     cmd = [
         sacct_path,
@@ -138,7 +142,7 @@ def _call_sacct(user: Optional[str] = None, max_jobs: int = 100) -> Tuple[Option
         '--noheader',
         '--units=M',  # Memory in MB
         '-u', user,
-        '--starttime=today-30days',  # Last 30 days
+        '--starttime', start_date,  # Last 30 days
         '-n', str(max_jobs),  # Limit total jobs retrieved
     ]
     
