@@ -102,21 +102,19 @@
                     <table class="table table-hover table-sm mb-0" id="historyTable">
                         <thead style="background-color: var(--theme-bg-color);">
                             <tr>
-                                <th>Job ID</th>
-                                <th>Name</th>
-                                <th>State</th>
-                                <th>Partition</th>
+                                <th class="sortable" data-sort="id">Job ID</th>
+                                <th class="sortable" data-sort="name">Name</th>
+                                <th class="sortable" data-sort="state">State</th>
+                                <th class="sortable" data-sort="partition">Partition</th>
                                 <th class="sortable" data-sort="start">Start Date <i class="bi bi-arrow-down-up"></i></th>
                                 <th class="sortable" data-sort="elapsed">Elapsed <i class="bi bi-arrow-down-up"></i></th>
-                                <th>CPUs</th>
-                                <th>Memory</th>
-                                <th>Details</th>
+                                <th class="sortable" data-sort="cpus">CPUs</th>
                             </tr>
                         </thead>
                         <tbody id="historyTableBody">
                             {% for job in job_history %}
                             <tr>
-                                <td><code>{{ job.id }}</code></td>
+                                <td data-sort-value="{{ job.id }}"><code>{{ job.id }}</code></td>
                                 <td>{{ job.name }}</td>
                                 <td>
                                     {% if job.state == 'COMPLETED' %}
@@ -136,36 +134,7 @@
                                     {% endif %}
                                 </td>
                                 <td data-sort-value="{{ job.elapsed_seconds|default(0) }}" data-sort-type="elapsed"><small>{{ job.elapsed }}</small></td>
-                                <td><small>{{ job.alloc_cpus }}/{{ job.req_cpus }}</small></td>
-                                <td><small>{{ job.max_rss }}</small></td>
-                                <td>
-                                    {% set job_id_safe = job.id|replace('.', '_')|replace('-', '_') %}
-                                    <button class="btn btn-sm btn-outline-secondary" 
-                                            onclick="showJobDetails('{{ job.id }}', '{{ job_id_safe }}')"
-                                            data-bs-toggle="collapse" 
-                                            data-bs-target="#details-{{ job_id_safe }}"
-                                            aria-expanded="false">
-                                        <i class="fas fa-info-circle"></i>
-                                    </button>
-                                </td>
-                            </tr>
-                            <tr class="collapse" id="details-{{ job_id_safe }}">
-                                <td colspan="9" class="p-0">
-                                    <div class="card card-body m-2 bg-light">
-                                        <div class="d-flex justify-content-between align-items-center mb-2">
-                                            <strong>Job Efficiency Report (seff)</strong>
-                                            <button class="btn btn-sm btn-close" onclick="hideJobDetails('{{ job.id }}', '{{ job_id_safe }}')"></button>
-                                        </div>
-                                        <div id="seff-content-{{ job_id_safe }}" class="font-monospace small">
-                                            <div class="text-center">
-                                                <div class="spinner-border spinner-border-sm" role="status">
-                                                    <span class="visually-hidden">Loading...</span>
-                                                </div>
-                                                <span class="ms-2">Loading efficiency report...</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </td>
+                                <td data-sort-value="{{ job.alloc_cpus|default('0')|int }}"><small>{{ job.alloc_cpus }}/{{ job.req_cpus }}</small></td>
                             </tr>
                             {% endfor %}
                         </tbody>
@@ -565,7 +534,7 @@ function sortTable(columnIndex) {
                 // Clear existing rows
                 tbody.innerHTML = '';
                 
-                // Add new rows
+                        // Add new rows
                 data.jobs.forEach(job => {
                     const row = document.createElement('tr');
                     
@@ -579,25 +548,14 @@ function sortTable(columnIndex) {
                         stateBadge = `<span class="badge bg-secondary">${job.state}</span>`;
                     }
                     
-                    const safeJobId = job.id.replace(/[.-]/g, '_');
                     row.innerHTML = `
-                        <td><code>${job.id}</code></td>
+                        <td data-sort-value="${job.id}"><code>${job.id}</code></td>
                         <td>${job.name}</td>
                         <td>${stateBadge}</td>
                         <td><code>${job.partition}</code></td>
                         <td data-sort-value="${job.start_timestamp || 0}"><small>${job.start || 'N/A'}</small></td>
                         <td data-sort-value="${job.elapsed_seconds || 0}" data-sort-type="elapsed"><small>${job.elapsed}</small></td>
-                        <td><small>${job.alloc_cpus}/${job.req_cpus}</small></td>
-                        <td><small>${job.max_rss}</small></td>
-                        <td>
-                            <button class="btn btn-sm btn-outline-secondary" 
-                                    onclick="showJobDetails('${job.id}', '${safeJobId}')"
-                                    data-bs-toggle="collapse" 
-                                    data-bs-target="#details-${safeJobId}"
-                                    aria-expanded="false">
-                                <i class="fas fa-info-circle"></i>
-                            </button>
-                        </td>
+                        <td data-sort-value="${job.alloc_cpus || 0}"><small>${job.alloc_cpus}/${job.req_cpus}</small></td>
                     `;
                     tbody.appendChild(row);
                 });
@@ -681,60 +639,13 @@ function sortTable(columnIndex) {
         });
     }
     
-    // Job details (seff) functionality
-    function showJobDetails(jobId, safeJobId) {
-        const contentDiv = document.getElementById('seff-content-' + safeJobId);
-        
-        if (!contentDiv) {
-            console.error('Content div not found for job:', jobId);
-            return;
-        }
-        
-        // Check if we've already loaded the content
-        if (contentDiv.dataset.loaded === 'true') {
-            return;
-        }
-        
-        // Fetch seff output
-        const baseUrl = '{{ url_for("jobs.job_efficiency", job_id="JOB_ID") }}';
-        const url = baseUrl.replace('JOB_ID', encodeURIComponent(jobId));
-        fetch(url)
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    contentDiv.innerHTML = '<div class="alert alert-warning mb-0">' + escapeHtml(data.error) + '</div>';
-                } else {
-                    // Display the raw seff output in a pre-formatted block
-                    const output = data.raw_output || '';
-                    contentDiv.innerHTML = '<pre class="mb-0" style="white-space: pre-wrap; font-size: 0.85em;">' + escapeHtml(output) + '</pre>';
-                    contentDiv.dataset.loaded = 'true';
-                }
-            })
-            .catch(error => {
-                console.error('Error loading job efficiency:', error);
-                contentDiv.innerHTML = '<div class="alert alert-danger mb-0">Error loading efficiency report: ' + escapeHtml(error.message) + '</div>';
-            });
-    }
-    
-    function hideJobDetails(jobId, safeJobId) {
-        const collapseElement = document.getElementById('details-' + safeJobId);
-        if (collapseElement) {
-            const bsCollapse = new bootstrap.Collapse(collapseElement, { toggle: false });
-            bsCollapse.hide();
-        }
-    }
-    
     function escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
     }
     
-    // Make functions available globally
-    window.showJobDetails = showJobDetails;
-    window.hideJobDetails = hideJobDetails;
-    
-    // Table sorting functionality
+    // Table sorting functionality for job history
     document.addEventListener('DOMContentLoaded', function() {
         const table = document.getElementById('historyTable');
         if (!table) return;
@@ -765,49 +676,61 @@ function sortTable(columnIndex) {
                 });
                 
                 // Sort table
-                sortTable(column, sortDirection);
+                sortHistoryTable(column, sortDirection, this);
             });
         });
         
-        function sortTable(column, direction) {
+        function sortHistoryTable(column, direction, activeHeader) {
             const tbody = table.querySelector('tbody');
             const rows = Array.from(tbody.querySelectorAll('tr'));
             
             rows.sort((a, b) => {
-                let aVal, bVal;
+                const aTds = a.querySelectorAll('td');
+                const bTds = b.querySelectorAll('td');
+                let aVal;
+                let bVal;
                 
-                if (column === 'start') {
-                    // Find the start date column (4th column, index 4)
-                    const aTds = a.querySelectorAll('td');
-                    const bTds = b.querySelectorAll('td');
-                    if (aTds.length > 4 && aTds[4].hasAttribute('data-sort-value')) {
-                        aVal = parseFloat(aTds[4].dataset.sortValue || 0);
-                    } else {
-                        aVal = 0;
-                    }
-                    if (bTds.length > 4 && bTds[4].hasAttribute('data-sort-value')) {
-                        bVal = parseFloat(bTds[4].dataset.sortValue || 0);
-                    } else {
-                        bVal = 0;
-                    }
+                if (column === 'id') {
+                    aVal = parseFloat(aTds[0].dataset.sortValue || aTds[0].textContent.trim()) || 0;
+                    bVal = parseFloat(bTds[0].dataset.sortValue || bTds[0].textContent.trim()) || 0;
+                } else if (column === 'name') {
+                    aVal = aTds[1].textContent.trim().toLowerCase();
+                    bVal = bTds[1].textContent.trim().toLowerCase();
+                } else if (column === 'state') {
+                    aVal = aTds[2].textContent.trim().toLowerCase();
+                    bVal = bTds[2].textContent.trim().toLowerCase();
+                } else if (column === 'partition') {
+                    aVal = aTds[3].textContent.trim().toLowerCase();
+                    bVal = bTds[3].textContent.trim().toLowerCase();
+                } else if (column === 'start') {
+                    aVal = parseFloat(aTds[4].dataset.sortValue || 0);
+                    bVal = parseFloat(bTds[4].dataset.sortValue || 0);
                 } else if (column === 'elapsed') {
-                    // Find the elapsed column by data-sort-type attribute
                     const aElapsed = a.querySelector('td[data-sort-type="elapsed"]');
                     const bElapsed = b.querySelector('td[data-sort-type="elapsed"]');
                     aVal = parseFloat(aElapsed?.dataset.sortValue || 0);
                     bVal = parseFloat(bElapsed?.dataset.sortValue || 0);
+                } else if (column === 'cpus') {
+                    aVal = parseFloat(aTds[6].dataset.sortValue || 0);
+                    bVal = parseFloat(bTds[6].dataset.sortValue || 0);
                 } else {
-                    return 0;
+                    aVal = 0;
+                    bVal = 0;
+                }
+                
+                if (typeof aVal === 'string' && typeof bVal === 'string') {
+                    if (direction === 'asc') {
+                        return aVal.localeCompare(bVal);
+                    }
+                    return bVal.localeCompare(aVal);
                 }
                 
                 if (direction === 'asc') {
                     return aVal - bVal;
-                } else {
-                    return bVal - aVal;
                 }
+                return bVal - aVal;
             });
             
-            // Re-append sorted rows
             rows.forEach(row => tbody.appendChild(row));
         }
     });
