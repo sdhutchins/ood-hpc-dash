@@ -9,6 +9,9 @@
 #projectsList.loading {
     opacity: 0.5;
 }
+.projects-anchor-fix {
+    overflow-anchor: none;
+}
 .pagination {
     margin-top: 1rem;
 }
@@ -369,8 +372,8 @@ function renderProjects(projects, total) {
                 </div>
             </div>
         </div>
-        <div id="projectsList"></div>
-        <div id="projectsPagination"></div>
+        <div id="projectsList" class="projects-anchor-fix"></div>
+        <div id="projectsPagination" class="projects-anchor-fix"></div>
     `;
     
     renderPage();
@@ -608,7 +611,8 @@ function initTooltips() {
         if (existingTooltip) {
             existingTooltip.dispose();
         }
-        return new bootstrap.Tooltip(tooltipTriggerEl);
+        // Render into body to avoid layout shifts
+        return new bootstrap.Tooltip(tooltipTriggerEl, { container: 'body' });
     });
 }
 
