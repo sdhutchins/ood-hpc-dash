@@ -8,7 +8,6 @@
 .project-card .card {
     overflow: hidden;
 }
-/* Pure CSS icon rotation - no JS needed */
 .project-card .btn[aria-expanded="true"] .fa-chevron-down {
     transform: rotate(180deg);
 }
@@ -19,6 +18,7 @@
     margin-top: 1rem;
 }
 </style>
+
 <div class="row mb-4">
     <div class="col">
         <br/>
@@ -64,435 +64,126 @@
 </div>
 
 <div id="projectsContainer">
-{% if projects and not loading %}
+    <div class="row mb-4" id="noProjectsMessage" style="display: none;">
+        <div class="col">
+            <div class="alert alert-warning">
+                <i class="fas fa-exclamation-triangle me-2"></i>
+                No git repositories found in configured directories.
+                <br/>
+                <small>Configure project directories in Settings.</small>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
-// Initialize pagination for server-rendered content
 (function() {
-    const projectsList = document.getElementById('projectsList');
-    if (projectsList && projectsList.children.length > 0) {
-        const allProjects = Array.from(projectsList.children).map((el, idx) => ({
-            element: el,
-            index: idx
-        }));
-        const totalProjects = allProjects.length;
-        const perPage = 20;
-        let currentPage = 1;
+    'use strict';
+    
+    const el = (id) => document.getElementById(id);
+    const show = (el) => el && (el.style.display = 'block');
+    const hide = (el) => el && (el.style.display = 'none');
+    
+    let allProjects = [];
+    let currentPage = 1;
+    const perPage = 20;
+    
+    function loadProjectsData() {
+        const loading = el('loadingIndicator');
+        const error = el('errorMessage');
+        const errorText = el('errorText');
+        const noProjects = el('noProjectsMessage');
         
-        if (totalProjects > perPage) {
-            // Store original projects
-            window.serverRenderedProjects = allProjects;
-            window.serverCurrentPage = currentPage;
-            window.serverPerPage = perPage;
-            
-            // Initialize pagination
-            renderServerPagination();
-        }
+        show(loading);
+        hide(error);
+        hide(noProjects);
+        
+        const url = el('projectsPageData')?.dataset.statusUrl || '/projects/status';
+        fetch(url)
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    throw new Error('Response is not JSON');
+                }
+                return response.json();
+            })
+            .then(data => {
+                hide(loading);
+                if (data.error) {
+                    if (errorText) errorText.textContent = data.error;
+                    show(error);
+                    return;
+                }
+                if (!data.projects || data.projects.length === 0) {
+                    show(noProjects);
+                    return;
+                }
+                allProjects = data.projects;
+                currentPage = 1;
+                renderProjects();
+            })
+            .catch(err => {
+                hide(loading);
+                if (errorText) errorText.textContent = 'Error loading projects: ' + err.message;
+                show(error);
+                console.error('Error loading projects:', err);
+            });
     }
     
-    function renderServerPagination() {
-        const projectsList = document.getElementById('projectsList');
-        const paginationContainer = document.getElementById('projectsPagination');
-        if (!projectsList || !paginationContainer) return;
+    function renderProjects() {
+        const container = el('projectsContainer');
+        if (!container) return;
         
-        const allProjects = window.serverRenderedProjects;
-        const current = window.serverCurrentPage;
-        const perPage = window.serverPerPage;
+        const start = (currentPage - 1) * perPage;
+        const end = start + perPage;
+        const pageProjects = allProjects.slice(start, end);
         const totalPages = Math.ceil(allProjects.length / perPage);
         
-        const start = (current - 1) * perPage;
-        const end = start + perPage;
-        
-        // Hide all projects
-        allProjects.forEach(p => p.element.style.display = 'none');
-        // Show current page
-        allProjects.slice(start, end).forEach(p => p.element.style.display = 'block');
-        
-        // Render pagination
-        renderPagination(paginationContainer, totalPages, current, true);
-    }
-    
-    function changeServerPage(page) {
-        window.serverCurrentPage = page;
-        renderServerPagination();
-        const container = document.getElementById('projectsContainer');
-        if (container) {
-            container.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
-        return false;
-    }
-    
-    function renderPagination(container, totalPages, current, isServer) {
-        if (totalPages <= 1) {
-            container.innerHTML = '';
-            return;
-        }
-        
-        let html = '<nav aria-label="Projects pagination"><ul class="pagination pagination-sm justify-content-center mb-0">';
-        
-        // Previous button
-        html += `<li class="page-item ${current === 1 ? 'disabled' : ''}">`;
-        html += current === 1 
-            ? '<span class="page-link">Previous</span>'
-            : `<a class="page-link" href="#" onclick="changeServerPage(${current - 1}); return false;">Previous</a>`;
-        html += '</li>';
-        
-        // Page numbers with ellipsis
-        const showPages = 5;
-        let startPage = Math.max(1, current - Math.floor(showPages / 2));
-        let endPage = Math.min(totalPages, startPage + showPages - 1);
-        
-        if (endPage - startPage < showPages - 1) {
-            startPage = Math.max(1, endPage - showPages + 1);
-        }
-        
-        if (startPage > 1) {
-            html += '<li class="page-item"><a class="page-link" href="#" onclick="changeServerPage(1); return false;">1</a></li>';
-            if (startPage > 2) {
-                html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
-            }
-        }
-        
-        for (let i = startPage; i <= endPage; i++) {
-            html += `<li class="page-item ${i === current ? 'active' : ''}">`;
-            html += i === current
-                ? `<span class="page-link">${i}</span>`
-                : `<a class="page-link" href="#" onclick="changeServerPage(${i}); return false;">${i}</a>`;
-            html += '</li>';
-        }
-        
-        if (endPage < totalPages) {
-            if (endPage < totalPages - 1) {
-                html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
-            }
-            html += `<li class="page-item"><a class="page-link" href="#" onclick="changeServerPage(${totalPages}); return false;">${totalPages}</a></li>`;
-        }
-        
-        // Next button
-        html += `<li class="page-item ${current === totalPages ? 'disabled' : ''}">`;
-        html += current === totalPages
-            ? '<span class="page-link">Next</span>'
-            : `<a class="page-link" href="#" onclick="changeServerPage(${current + 1}); return false;">Next</a>`;
-        html += '</li>';
-        
-        html += '</ul></nav>';
-        container.innerHTML = html;
-    }
-    
-    window.changeServerPage = changeServerPage;
-})();
-</script>
-<div class="row mb-3">
-    <div class="col">
-        <div class="alert alert-info py-2">
-            <strong>{{ total_repos }}</strong> git repositories found.
-        </div>
-    </div>
-</div>
-<div id="projectsList">
-
-{%- for project in projects -%}
-{% set idx = loop.index0 %}
-<div class="row mb-2 project-card">
-    <div class="col">
-        <div class="card shadow-sm">
-            <div class="card-body py-2 px-3">
-                <div class="d-flex justify-content-between align-items-start">
-                    <div class="flex-grow-1" style="min-width: 0;">
-                        <h6 class="mb-1 text-truncate">
-                            <i class="fas fa-folder me-1"></i>{{ project.name }}
-                            <small class="text-muted ms-2">{{ project.path }}</small>
-                        </h6>
-                        <div class="d-flex flex-wrap gap-2 align-items-center small">
-                            {% if project.git.dirty %}
-                                <span class="badge bg-warning text-dark">Dirty</span>
-                            {% elif project.git.ahead or project.git.behind %}
-                                <span class="badge bg-info">Ahead</span>{%- if project.git.behind -%}<span class="badge bg-danger">Behind</span>{%- endif -%}
-                            {% else %}
-                                <span class="badge bg-success">Clean</span>
-                            {% endif %}
-                            <span><code class="small">{{ project.git.branch|default('N/A') }}</code></span>
-                            {% if project.git.last_commit_date %}
-                                <span class="text-muted">{{ project.git.last_commit_date|truncate(10, end='') }}</span>
-                            {% endif %}
-                            {% set env_count = project.reproducibility.environment_files|length %}
-                            {% set workflow_count = project.reproducibility.workflow_configs|length %}
-                            {% if env_count > 0 or workflow_count > 0 %}
-                                <span>
-                                    <i class="fas fa-file-code"></i> {{ env_count }} <i class="fas fa-cogs ms-1"></i> {{ workflow_count }}
-                                </span>
-                            {% endif %}
-                            {% if project.drift_footprint.drift_days is not none and project.drift_footprint.drift_days > 0 %}
-                                <span class="badge bg-warning text-dark"><i class="fas fa-clock"></i> {{ project.drift_footprint.drift_days }}d</span>
-                            {% endif %}
-                            {% if project.drift_footprint.directory_size %}
-                                <span class="text-muted"><i class="fas fa-hdd"></i> {{ (project.drift_footprint.directory_size / 1048576)|round(1) }} MB</span>
-                            {% endif %}
-                        </div>
-                    </div>
-                    <button class="btn btn-sm btn-outline-secondary ms-2 flex-shrink-0" 
-                            type="button"
-                            data-bs-toggle="collapse" 
-                            data-bs-target="#details-{{ idx }}"
-                            aria-expanded="false"
-                            aria-controls="details-{{ idx }}">
-                        <i class="fas fa-chevron-down"></i>
-                    </button>
-                </div>
-                <div class="collapse mt-2 pt-2 border-top" id="details-{{ idx }}">
-                    <div class="row small">
-                        <div class="col-md-4">
-                            <strong>Git:</strong>
-                            <ul class="list-unstyled mb-0 mt-1">
-                                <li>Remote: {% if project.git.remote %}<a href="{{ project.git.remote }}" target="_blank">{{ project.git.remote|truncate(40, end='...') }}</a>{% else %}<span class="text-muted">None</span>{% endif %}</li>
-                                <li>Commit: <code>{{ project.git.last_commit|default('N/A') }}</code></li>
-                                <li>Author: {{ project.git.last_commit_author|default('N/A') }}</li>
-                            </ul>
-                        </div>
-                        <div class="col-md-4">
-                            <strong>Reproducibility:</strong>
-                            <ul class="list-unstyled mb-0 mt-1">
-                                {% if project.reproducibility.environment_files %}
-                                    <li>Env: {{ project.reproducibility.environment_files|map(attribute='name')|join(', ') }}</li>
-                                {% endif %}
-                                {% if project.reproducibility.workflow_configs %}
-                                    <li>Workflows: {{ project.reproducibility.workflow_configs|map(attribute='name')|join(', ') }}</li>
-                                {% endif %}
-                                {% if project.reproducibility.missing_common_files %}
-                                    <li class="text-warning">Missing: {{ project.reproducibility.missing_common_files|join(', ') }}</li>
-                                {% endif %}
-                                {% if project.drift_footprint.large_untracked_files %}
-                                    <li>Large untracked: {{ project.drift_footprint.large_untracked_files|length }} file(s)</li>
-                                {% endif %}
-                            </ul>
-                        </div>
-                        <div class="col-md-4">
-                            <strong>Footprint:</strong>
-                            <ul class="list-unstyled mb-0 mt-1">
-                                {% if project.drift_footprint.git_size %}
-                                    <li>Git: {{ (project.drift_footprint.git_size / 1048576)|round(1) }} MB</li>
-                                {% endif %}
-                                {% if project.drift_footprint.last_modified %}
-                                    <li>Modified: {{ project.drift_footprint.last_modified|truncate(10, end='') }}</li>
-                                {% endif %}
-                                {% if project.drift_footprint.last_commit %}
-                                    <li>Commit: {{ project.drift_footprint.last_commit|truncate(10, end='') }}</li>
-                                {% endif %}
-                            </ul>
-                        </div>
+        let html = `
+            <div class="row mb-3">
+                <div class="col">
+                    <div class="alert alert-info py-2">
+                        <strong>${allProjects.length}</strong> git repositories found.
                     </div>
                 </div>
             </div>
-        </div>
-    </div>
-</div>
-{%- endfor -%}
-</div>
-<div id="projectsPagination"></div>
-{% else %}
-<div class="row mb-4" id="noProjectsMessage" style="display: none;">
-    <div class="col">
-        <div class="alert alert-warning">
-            <i class="fas fa-exclamation-triangle me-2"></i>
-            No git repositories found in configured directories.
-            <br/>
-            <small>Configure project directories in Settings.</small>
-        </div>
-    </div>
-</div>
-{% endif %}
-</div>
-
-<script>
-const el = (id) => document.getElementById(id);
-const show = (el) => el && (el.style.display = 'block');
-const hide = (el) => el && (el.style.display = 'none');
-
-function loadProjectsData() {
-    const loading = el('loadingIndicator');
-    const error = el('errorMessage');
-    const errorText = el('errorText');
-    const noProjects = el('noProjectsMessage');
-    const container = el('projectsContainer');
-    
-    show(loading);
-    hide(error);
-    hide(noProjects);
-    
-    const url = el('projectsPageData')?.dataset.statusUrl || '/projects/status';
-    fetch(url)
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            const contentType = response.headers.get('content-type');
-            if (!contentType || !contentType.includes('application/json')) {
-                throw new Error('Response is not JSON');
-            }
-            return response.json();
-        })
-        .then(data => {
-            hide(loading);
-            if (data.error) {
-                if (errorText) errorText.textContent = data.error;
-                show(error);
-                return;
-            }
-            if (!data.projects || data.projects.length === 0) {
-                show(noProjects);
-                return;
-            }
-            renderProjects(data.projects, data.total);
-        })
-        .catch(err => {
-            hide(loading);
-            if (errorText) errorText.textContent = 'Error loading projects: ' + err.message;
-            show(error);
-            console.error('Error loading projects:', err);
-        });
-}
-
-let allProjects = [];
-let currentPage = 1;
-const perPage = 20;
-
-function renderProjects(projects, total) {
-    const container = el('projectsContainer');
-    if (!container) return;
-    
-    allProjects = projects;
-    currentPage = 1;
-    
-    container.innerHTML = `
-        <div class="row mb-3">
-            <div class="col">
-                <div class="alert alert-info py-2">
-                    <strong>${total}</strong> git repositories found.
-                </div>
-            </div>
-        </div>
-        <div id="projectsList"></div>
-        <div id="projectsPagination"></div>
-    `;
-    
-    renderPage();
-}
-
-function renderPage() {
-    const listContainer = el('projectsList');
-    const paginationContainer = el('projectsPagination');
-    if (!listContainer || !paginationContainer) return;
-    
-    const start = (currentPage - 1) * perPage;
-    const end = start + perPage;
-    const pageProjects = allProjects.slice(start, end);
-    const totalPages = Math.ceil(allProjects.length / perPage);
-    
-    // Clear and render projects
-    listContainer.innerHTML = '';
-    pageProjects.forEach((project, index) => {
-        const div = document.createElement('div');
-        div.innerHTML = generateProjectHTML(project, start + index);
-        listContainer.appendChild(div.firstElementChild);
-    });
-    
-    // Render pagination
-    renderPagination(paginationContainer, totalPages, currentPage);
-}
-
-function renderPagination(container, totalPages, current) {
-    if (totalPages <= 1) {
-        container.innerHTML = '';
-        return;
-    }
-    
-    let html = '<nav aria-label="Projects pagination"><ul class="pagination pagination-sm justify-content-center mb-0">';
-    
-    // Previous button
-    html += `<li class="page-item ${current === 1 ? 'disabled' : ''}">`;
-    html += current === 1 
-        ? '<span class="page-link">Previous</span>'
-        : `<a class="page-link" href="#" onclick="changePage(${current - 1}); return false;">Previous</a>`;
-    html += '</li>';
-    
-    // Page numbers with ellipsis
-    const showPages = 5;
-    let startPage = Math.max(1, current - Math.floor(showPages / 2));
-    let endPage = Math.min(totalPages, startPage + showPages - 1);
-    
-    if (endPage - startPage < showPages - 1) {
-        startPage = Math.max(1, endPage - showPages + 1);
-    }
-    
-    if (startPage > 1) {
-        html += '<li class="page-item"><a class="page-link" href="#" onclick="changePage(1); return false;">1</a></li>';
-        if (startPage > 2) {
-            html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
-        }
-    }
-    
-    for (let i = startPage; i <= endPage; i++) {
-        html += `<li class="page-item ${i === current ? 'active' : ''}">`;
-        html += i === current
-            ? `<span class="page-link">${i}</span>`
-            : `<a class="page-link" href="#" onclick="changePage(${i}); return false;">${i}</a>`;
-        html += '</li>';
-    }
-    
-    if (endPage < totalPages) {
-        if (endPage < totalPages - 1) {
-            html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
-        }
-        html += `<li class="page-item"><a class="page-link" href="#" onclick="changePage(${totalPages}); return false;">${totalPages}</a></li>`;
-    }
-    
-    // Next button
-    html += `<li class="page-item ${current === totalPages ? 'disabled' : ''}">`;
-    html += current === totalPages
-        ? '<span class="page-link">Next</span>'
-        : `<a class="page-link" href="#" onclick="changePage(${current + 1}); return false;">Next</a>`;
-    html += '</li>';
-    
-    html += '</ul></nav>';
-    container.innerHTML = html;
-}
-
-function changePage(page) {
-    currentPage = page;
-    renderPage();
-    return false;
-}
-
-function generateProjectHTML(project, index) {
-    const git = project.git || {};
-    const repro = project.reproducibility || {};
-    const drift = project.drift_footprint || {};
-    
-    const stateBadge = git.dirty ? '<span class="badge bg-warning text-dark">Dirty</span>' :
-        git.ahead || git.behind ? 
-            `<span class="badge bg-info">Ahead</span>${git.behind ? '<span class="badge bg-danger">Behind</span>' : ''}` :
-            '<span class="badge bg-success">Clean</span>';
-    
-    const envCount = repro.environment_files?.length || 0;
-    const workflowCount = repro.workflow_configs?.length || 0;
-    const reproInfo = (envCount > 0 || workflowCount > 0) ? 
-        `<span><i class="fas fa-file-code"></i> ${envCount} <i class="fas fa-cogs ms-1"></i> ${workflowCount}</span>` : '';
-    
-    const driftBadge = drift.drift_days > 0 ? 
-        `<span class="badge bg-warning text-dark"><i class="fas fa-clock"></i> ${drift.drift_days}d</span>` : '';
-    
-    const sizeInfo = drift.directory_size ? 
-        `<span class="text-muted"><i class="fas fa-hdd"></i> ${(drift.directory_size / (1024*1024)).toFixed(1)} MB</span>` : '';
-    
-    const commitDate = git.last_commit_date ? git.last_commit_date.substring(0, 10) : '';
-    
-    const envList = repro.environment_files?.map(f => `<li>Env: ${escapeHtml(f.name)}</li>`).join('') || '';
-    const workflowList = repro.workflow_configs?.map(w => `<li>Workflows: ${escapeHtml(w.name)}</li>`).join('') || '';
-    const missingList = repro.missing_common_files?.length ? 
-        `<li class="text-warning">Missing: ${escapeHtml(repro.missing_common_files.join(', '))}</li>` : '';
-    const untrackedList = drift.large_untracked_files?.length ? 
-        `<li>Large untracked: ${drift.large_untracked_files.length} file(s)</li>` : '';
-    
-    return `
+            <div id="projectsList">`;
+        
+        pageProjects.forEach((project, idx) => {
+            const index = start + idx;
+            const git = project.git || {};
+            const repro = project.reproducibility || {};
+            const drift = project.drift_footprint || {};
+            
+            const stateBadge = git.dirty ? '<span class="badge bg-warning text-dark">Dirty</span>' :
+                git.ahead || git.behind ? 
+                    `<span class="badge bg-info">Ahead</span>${git.behind ? '<span class="badge bg-danger">Behind</span>' : ''}` :
+                    '<span class="badge bg-success">Clean</span>';
+            
+            const envCount = repro.environment_files?.length || 0;
+            const workflowCount = repro.workflow_configs?.length || 0;
+            const reproInfo = (envCount > 0 || workflowCount > 0) ? 
+                `<span><i class="fas fa-file-code"></i> ${envCount} <i class="fas fa-cogs ms-1"></i> ${workflowCount}</span>` : '';
+            
+            const driftBadge = drift.drift_days > 0 ? 
+                `<span class="badge bg-warning text-dark"><i class="fas fa-clock"></i> ${drift.drift_days}d</span>` : '';
+            
+            const sizeInfo = drift.directory_size ? 
+                `<span class="text-muted"><i class="fas fa-hdd"></i> ${(drift.directory_size / (1024*1024)).toFixed(1)} MB</span>` : '';
+            
+            const commitDate = git.last_commit_date ? git.last_commit_date.substring(0, 10) : '';
+            
+            const envList = repro.environment_files?.map(f => `<li>Env: ${escapeHtml(f.name)}</li>`).join('') || '';
+            const workflowList = repro.workflow_configs?.map(w => `<li>Workflows: ${escapeHtml(w.name)}</li>`).join('') || '';
+            const missingList = repro.missing_common_files?.length ? 
+                `<li class="text-warning">Missing: ${escapeHtml(repro.missing_common_files.join(', '))}</li>` : '';
+            const untrackedList = drift.large_untracked_files?.length ? 
+                `<li>Large untracked: ${drift.large_untracked_files.length} file(s)</li>` : '';
+            
+            html += `
 <div class="row mb-2 project-card">
     <div class="col">
         <div class="card shadow-sm">
@@ -551,32 +242,119 @@ function generateProjectHTML(project, index) {
         </div>
     </div>
 </div>`;
-}
-
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-// Initialize on DOM ready
-document.addEventListener('DOMContentLoaded', function() {
-    const pageData = el('projectsPageData');
-    if (pageData?.dataset.loading === 'true') {
-        loadProjectsData();
+        });
+        
+        html += `</div>`;
+        
+        if (totalPages > 1) {
+            html += `<div id="projectsPagination"></div>`;
+        }
+        
+        container.innerHTML = html;
+        
+        if (totalPages > 1) {
+            renderPagination(totalPages);
+        }
+        
+        // Re-initialize Bootstrap collapse for new elements
+        const collapseElements = container.querySelectorAll('.collapse');
+        collapseElements.forEach(collapseEl => {
+            new bootstrap.Collapse(collapseEl, { toggle: false });
+        });
     }
     
-    el('refreshProjectsBtn')?.addEventListener('click', function() {
-        const icon = this.querySelector('i');
-        icon.classList.add('fa-spin');
-        this.disabled = true;
-        loadProjectsData();
-        setTimeout(() => {
-            icon.classList.remove('fa-spin');
-            this.disabled = false;
-        }, 1000);
+    function renderPagination(totalPages) {
+        const container = el('projectsPagination');
+        if (!container || totalPages <= 1) {
+            if (container) container.innerHTML = '';
+            return;
+        }
+        
+        let html = '<nav aria-label="Projects pagination"><ul class="pagination pagination-sm justify-content-center mb-0">';
+        
+        html += `<li class="page-item ${currentPage === 1 ? 'disabled' : ''}">`;
+        html += currentPage === 1 
+            ? '<span class="page-link">Previous</span>'
+            : `<a class="page-link" href="#" data-page="${currentPage - 1}">Previous</a>`;
+        html += '</li>';
+        
+        const showPages = 5;
+        let startPage = Math.max(1, currentPage - Math.floor(showPages / 2));
+        let endPage = Math.min(totalPages, startPage + showPages - 1);
+        
+        if (endPage - startPage < showPages - 1) {
+            startPage = Math.max(1, endPage - showPages + 1);
+        }
+        
+        if (startPage > 1) {
+            html += `<li class="page-item"><a class="page-link" href="#" data-page="1">1</a></li>`;
+            if (startPage > 2) {
+                html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+            }
+        }
+        
+        for (let i = startPage; i <= endPage; i++) {
+            html += `<li class="page-item ${i === currentPage ? 'active' : ''}">`;
+            html += i === currentPage
+                ? `<span class="page-link">${i}</span>`
+                : `<a class="page-link" href="#" data-page="${i}">${i}</a>`;
+            html += '</li>';
+        }
+        
+        if (endPage < totalPages) {
+            if (endPage < totalPages - 1) {
+                html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+            }
+            html += `<li class="page-item"><a class="page-link" href="#" data-page="${totalPages}">${totalPages}</a></li>`;
+        }
+        
+        html += `<li class="page-item ${currentPage === totalPages ? 'disabled' : ''}">`;
+        html += currentPage === totalPages
+            ? '<span class="page-link">Next</span>'
+            : `<a class="page-link" href="#" data-page="${currentPage + 1}">Next</a>`;
+        html += '</li>';
+        
+        html += '</ul></nav>';
+        container.innerHTML = html;
+        
+        // Use event delegation for pagination
+        container.querySelectorAll('a[data-page]').forEach(link => {
+            link.addEventListener('click', function(e) {
+                e.preventDefault();
+                const page = parseInt(this.dataset.page);
+                if (page && page !== currentPage) {
+                    currentPage = page;
+                    renderProjects();
+                }
+            });
+        });
+    }
+    
+    function escapeHtml(text) {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    
+    // Initialize on DOM ready
+    document.addEventListener('DOMContentLoaded', function() {
+        const pageData = el('projectsPageData');
+        if (pageData?.dataset.loading === 'true') {
+            loadProjectsData();
+        }
+        
+        el('refreshProjectsBtn')?.addEventListener('click', function() {
+            const icon = this.querySelector('i');
+            icon.classList.add('fa-spin');
+            this.disabled = true;
+            loadProjectsData();
+            setTimeout(() => {
+                icon.classList.remove('fa-spin');
+                this.disabled = false;
+            }, 1000);
+        });
     });
-});
+})();
 </script>
 {% endblock %}
