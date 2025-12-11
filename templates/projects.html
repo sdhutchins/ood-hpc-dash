@@ -87,6 +87,7 @@
     let allProjects = [];
     let currentPage = 1;
     const perPage = 20;
+    let fetchController = null;
     
     function loadProjectsData() {
         const loading = el('loadingIndicator');
@@ -94,13 +95,24 @@
         const errorText = el('errorText');
         const noProjects = el('noProjectsMessage');
         
+        // Abort any existing fetch
+        if (fetchController) {
+            fetchController.abort();
+        }
+        
         show(loading);
         hide(error);
         hide(noProjects);
         
         const url = el('projectsPageData')?.dataset.statusUrl || '/projects/status';
-        fetch(url)
+        fetchController = new AbortController();
+        const timeoutId = setTimeout(() => {
+            fetchController.abort();
+        }, 60000); // 60 second timeout
+        
+        fetch(url, { signal: fetchController.signal })
             .then(response => {
+                clearTimeout(timeoutId);
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
@@ -112,6 +124,7 @@
             })
             .then(data => {
                 hide(loading);
+                fetchController = null;
                 if (data.error) {
                     if (errorText) errorText.textContent = data.error;
                     show(error);
@@ -126,8 +139,14 @@
                 renderProjects();
             })
             .catch(err => {
+                clearTimeout(timeoutId);
                 hide(loading);
-                if (errorText) errorText.textContent = 'Error loading projects: ' + err.message;
+                fetchController = null;
+                if (err.name === 'AbortError') {
+                    if (errorText) errorText.textContent = 'Request timed out. Please try again.';
+                } else {
+                    if (errorText) errorText.textContent = 'Error loading projects: ' + err.message;
+                }
                 show(error);
                 console.error('Error loading projects:', err);
             });
@@ -158,14 +177,19 @@
             const repro = project.reproducibility || {};
             const drift = project.drift_footprint || {};
             
+            // Use project name + index for stable IDs
+            const safeName = escapeHtml(project.name || 'project').replace(/[^a-zA-Z0-9-_]/g, '-');
+            const detailsId = `details-${safeName}-${index}`;
+            
             const stateBadge = git.dirty ? '<span class="badge bg-warning text-dark">Dirty</span>' :
                 git.ahead || git.behind ? 
                     `<span class="badge bg-info">Ahead</span>${git.behind ? '<span class="badge bg-danger">Behind</span>' : ''}` :
                     '<span class="badge bg-success">Clean</span>';
             
-            const envCount = repro.environment_files?.length || 0;
-            const workflowCount = repro.workflow_configs?.length || 0;
-            const reproInfo = (envCount > 0 || workflowCount > 0) ? 
+            const envCount = Array.isArray(repro.environment_files) ? repro.environment_files.length : 0;
+            const workflowCount = Array.isArray(repro.workflow_configs) ? repro.workflow_configs.length : 0;
+            // Fix: Use sum, not OR
+            const reproInfo = (envCount + workflowCount > 0) ? 
                 `<span><i class="fas fa-file-code"></i> ${envCount} <i class="fas fa-cogs ms-1"></i> ${workflowCount}</span>` : '';
             
             const driftBadge = drift.drift_days > 0 ? 
@@ -176,12 +200,24 @@
             
             const commitDate = git.last_commit_date ? git.last_commit_date.substring(0, 10) : '';
             
-            const envList = repro.environment_files?.map(f => `<li>Env: ${escapeHtml(f.name)}</li>`).join('') || '';
-            const workflowList = repro.workflow_configs?.map(w => `<li>Workflows: ${escapeHtml(w.name)}</li>`).join('') || '';
-            const missingList = repro.missing_common_files?.length ? 
-                `<li class="text-warning">Missing: ${escapeHtml(repro.missing_common_files.join(', '))}</li>` : '';
-            const untrackedList = drift.large_untracked_files?.length ? 
-                `<li>Large untracked: ${drift.large_untracked_files.length} file(s)</li>` : '';
+            // Defensive array checks
+            const envList = Array.isArray(repro.environment_files) 
+                ? repro.environment_files.map(f => `<li>Env: ${escapeHtml(f?.name || 'unknown')}</li>`).join('') 
+                : '';
+            const workflowList = Array.isArray(repro.workflow_configs) 
+                ? repro.workflow_configs.map(w => `<li>Workflows: ${escapeHtml(w?.name || 'unknown')}</li>`).join('') 
+                : '';
+            const missingList = Array.isArray(repro.missing_common_files) && repro.missing_common_files.length > 0
+                ? `<li class="text-warning">Missing: ${escapeHtml(repro.missing_common_files.join(', '))}</li>` 
+                : '';
+            const untrackedList = Array.isArray(drift.large_untracked_files) && drift.large_untracked_files.length > 0
+                ? `<li>Large untracked: ${drift.large_untracked_files.length} file(s)</li>` 
+                : '';
+            
+            // Fix: Safe remote URL handling with null check
+            const remoteHtml = git.remote && typeof git.remote === 'string'
+                ? `<a href="${escapeHtml(git.remote)}" target="_blank">${escapeHtml(git.remote.length > 40 ? git.remote.substring(0, 40) + '...' : git.remote)}</a>`
+                : '<span class="text-muted">None</span>';
             
             html += `
 <div class="row mb-2 project-card">
@@ -203,20 +239,21 @@
                             ${sizeInfo}
                         </div>
                     </div>
-                    <button class="btn btn-sm btn-outline-secondary ms-2 flex-shrink-0 collapse-btn" 
+                    <button class="btn btn-sm btn-outline-secondary ms-2 flex-shrink-0" 
                             type="button"
-                            data-target="#details-${index}"
+                            data-bs-toggle="collapse" 
+                            data-bs-target="#${detailsId}"
                             aria-expanded="false"
-                            aria-controls="details-${index}">
+                            aria-controls="${detailsId}">
                         <i class="fas fa-chevron-down"></i>
                     </button>
                 </div>
-                <div class="collapse mt-2 pt-2 border-top" id="details-${index}">
+                <div class="collapse mt-2 pt-2 border-top" id="${detailsId}">
                     <div class="row small">
                         <div class="col-md-4">
                             <strong>Git:</strong>
                             <ul class="list-unstyled mb-0 mt-1">
-                                <li>Remote: ${git.remote ? `<a href="${escapeHtml(git.remote)}" target="_blank">${escapeHtml(git.remote.length > 40 ? git.remote.substring(0, 40) + '...' : git.remote)}</a>` : '<span class="text-muted">None</span>'}</li>
+                                <li>Remote: ${remoteHtml}</li>
                                 <li>Commit: <code>${escapeHtml(git.last_commit || 'N/A')}</code></li>
                                 <li>Author: ${escapeHtml(git.last_commit_author || 'N/A')}</li>
                             </ul>
@@ -254,6 +291,16 @@
         if (totalPages > 1) {
             renderPagination(totalPages);
         }
+        
+        // Initialize Bootstrap collapse for dynamically added elements
+        // Use getOrCreateInstance to avoid dispose/recreate issues
+        requestAnimationFrame(() => {
+            const collapseElements = container.querySelectorAll('.collapse');
+            collapseElements.forEach(collapseEl => {
+                // Use getOrCreateInstance - no dispose/recreate needed
+                bootstrap.Collapse.getOrCreateInstance(collapseEl, { toggle: false });
+            });
+        });
     }
     
     function renderPagination(totalPages) {
@@ -334,44 +381,23 @@
     document.addEventListener('DOMContentLoaded', function() {
         const container = el('projectsContainer');
         
-        // Set up event delegation for collapse buttons (once, handles all buttons)
+        // Single delegated listener for collapse state changes (set up once)
+        // Updates aria-expanded on all collapse elements
         if (container) {
-            container.addEventListener('click', function(e) {
-                const button = e.target.closest('.collapse-btn');
-                if (!button) return;
-                
-                e.preventDefault();
-                e.stopPropagation();
-                
-                const targetId = button.getAttribute('data-target');
-                if (!targetId) return;
-                
-                const targetEl = container.querySelector(targetId);
-                if (!targetEl) return;
-                
-                // Dispose any existing instance to avoid conflicts
-                const existingInstance = bootstrap.Collapse.getInstance(targetEl);
-                if (existingInstance) {
-                    existingInstance.dispose();
-                }
-                
-                // Create fresh collapse instance
-                const collapseInstance = new bootstrap.Collapse(targetEl, {
-                    toggle: false
-                });
-                
-                // Toggle the collapse
-                collapseInstance.toggle();
-                
-                // Update button aria-expanded after animation completes
-                targetEl.addEventListener('shown.bs.collapse', function updateAria() {
+            container.addEventListener('shown.bs.collapse', function(e) {
+                const targetId = '#' + e.target.id;
+                const button = document.querySelector(`[data-bs-target="${targetId}"]`);
+                if (button) {
                     button.setAttribute('aria-expanded', 'true');
-                    targetEl.removeEventListener('shown.bs.collapse', updateAria);
-                });
-                targetEl.addEventListener('hidden.bs.collapse', function updateAria() {
+                }
+            });
+            
+            container.addEventListener('hidden.bs.collapse', function(e) {
+                const targetId = '#' + e.target.id;
+                const button = document.querySelector(`[data-bs-target="${targetId}"]`);
+                if (button) {
                     button.setAttribute('aria-expanded', 'false');
-                    targetEl.removeEventListener('hidden.bs.collapse', updateAria);
-                });
+                }
             });
         }
         
