@@ -203,10 +203,9 @@
                             ${sizeInfo}
                         </div>
                     </div>
-                    <button class="btn btn-sm btn-outline-secondary ms-2 flex-shrink-0" 
+                    <button class="btn btn-sm btn-outline-secondary ms-2 flex-shrink-0 collapse-btn" 
                             type="button"
-                            data-bs-toggle="collapse" 
-                            data-bs-target="#details-${index}"
+                            data-target="#details-${index}"
                             aria-expanded="false"
                             aria-controls="details-${index}">
                         <i class="fas fa-chevron-down"></i>
@@ -255,9 +254,6 @@
         if (totalPages > 1) {
             renderPagination(totalPages);
         }
-        
-        // Bootstrap 5 automatically initializes collapse from data-bs-toggle attributes
-        // No manual initialization needed - it will cause conflicts if we do it manually
     }
     
     function renderPagination(totalPages) {
@@ -336,6 +332,49 @@
     
     // Initialize on DOM ready
     document.addEventListener('DOMContentLoaded', function() {
+        const container = el('projectsContainer');
+        
+        // Set up event delegation for collapse buttons (once, handles all buttons)
+        if (container) {
+            container.addEventListener('click', function(e) {
+                const button = e.target.closest('.collapse-btn');
+                if (!button) return;
+                
+                e.preventDefault();
+                e.stopPropagation();
+                
+                const targetId = button.getAttribute('data-target');
+                if (!targetId) return;
+                
+                const targetEl = container.querySelector(targetId);
+                if (!targetEl) return;
+                
+                // Dispose any existing instance to avoid conflicts
+                const existingInstance = bootstrap.Collapse.getInstance(targetEl);
+                if (existingInstance) {
+                    existingInstance.dispose();
+                }
+                
+                // Create fresh collapse instance
+                const collapseInstance = new bootstrap.Collapse(targetEl, {
+                    toggle: false
+                });
+                
+                // Toggle the collapse
+                collapseInstance.toggle();
+                
+                // Update button aria-expanded after animation completes
+                targetEl.addEventListener('shown.bs.collapse', function updateAria() {
+                    button.setAttribute('aria-expanded', 'true');
+                    targetEl.removeEventListener('shown.bs.collapse', updateAria);
+                });
+                targetEl.addEventListener('hidden.bs.collapse', function updateAria() {
+                    button.setAttribute('aria-expanded', 'false');
+                    targetEl.removeEventListener('hidden.bs.collapse', updateAria);
+                });
+            });
+        }
+        
         const pageData = el('projectsPageData');
         if (pageData?.dataset.loading === 'true') {
             loadProjectsData();
