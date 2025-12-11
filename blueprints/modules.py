@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 # Path to modules file
 MODULES_FILE = Path('logs/modules.txt')
 CATEGORIES_FILE = Path('config/module_categories.json')
-DESCRIPTIONS_CACHE_FILE = Path('logs/module_descriptions_cache.json')
 
 # Module cache (stores grouped modules data and timestamp)
 _modules_cache: Optional[List[Dict[str, Any]]] = None
@@ -193,39 +192,71 @@ def _get_module_families() -> Tuple[Optional[List[str]], Optional[str]]:
 
 
 def _load_descriptions_cache() -> Dict[str, str]:
-    """Load module descriptions cache from file.
+    """Load module descriptions from module_categories.json.
     
     Returns:
         Dictionary mapping module family names to descriptions
     """
-    if not DESCRIPTIONS_CACHE_FILE.exists():
+    if not CATEGORIES_FILE.exists():
         return {}
     
     try:
-        with DESCRIPTIONS_CACHE_FILE.open('r', encoding='utf-8') as f:
-            cache = json.load(f)
-        if isinstance(cache, dict):
-            logger.debug(f"Loaded {len(cache)} cached descriptions")
-            return cache
+        with CATEGORIES_FILE.open('r', encoding='utf-8') as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            # Check if descriptions key exists
+            descriptions = data.get('descriptions', {})
+            if isinstance(descriptions, dict):
+                logger.debug(f"Loaded {len(descriptions)} cached descriptions from module_categories.json")
+                return descriptions
         return {}
     except Exception as e:
-        logger.warning(f"Error loading descriptions cache: {e}")
+        logger.warning(f"Error loading descriptions from module_categories.json: {e}")
         return {}
 
 
 def _save_descriptions_cache(cache: Dict[str, str]) -> None:
-    """Save module descriptions cache to file.
+    """Save module descriptions to module_categories.json, preserving existing categories.
     
     Args:
         cache: Dictionary mapping module family names to descriptions
     """
     try:
-        DESCRIPTIONS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with DESCRIPTIONS_CACHE_FILE.open('w', encoding='utf-8') as f:
-            json.dump(cache, f, indent=2, ensure_ascii=False)
-        logger.debug(f"Saved {len(cache)} descriptions to cache")
+        CATEGORIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Load existing categories file
+        existing_data = {}
+        if CATEGORIES_FILE.exists():
+            try:
+                with CATEGORIES_FILE.open('r', encoding='utf-8') as f:
+                    existing_data = json.load(f)
+            except Exception:
+                pass
+        
+        # Ensure existing_data is a dict
+        if not isinstance(existing_data, dict):
+            existing_data = {}
+        
+        # Preserve categories (everything except 'descriptions')
+        categories = {k: v for k, v in existing_data.items() if k != 'descriptions'}
+        
+        # Merge descriptions
+        existing_descriptions = existing_data.get('descriptions', {})
+        if isinstance(existing_descriptions, dict):
+            existing_descriptions.update(cache)
+            descriptions = existing_descriptions
+        else:
+            descriptions = cache
+        
+        # Combine categories and descriptions
+        combined_data = {**categories, 'descriptions': descriptions}
+        
+        # Save to file
+        with CATEGORIES_FILE.open('w', encoding='utf-8') as f:
+            json.dump(combined_data, f, indent=4, ensure_ascii=False)
+        logger.debug(f"Saved {len(descriptions)} descriptions to module_categories.json")
     except Exception as e:
-        logger.warning(f"Error saving descriptions cache: {e}")
+        logger.warning(f"Error saving descriptions to module_categories.json: {e}")
 
 
 def _get_module_details(module_name: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -588,14 +619,24 @@ def _load_modules_from_file():
         return []
 
 def _load_categories():
-    """Load module categories from JSON file."""
+    """Load module categories from JSON file (excluding descriptions key).
+    
+    Returns:
+        Dictionary mapping module names to categories, or None on error
+    """
     try:
         if not CATEGORIES_FILE.exists():
             logger.warning(f"Categories file not found: {CATEGORIES_FILE}")
             return None
         
         with CATEGORIES_FILE.open('r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+        
+        if isinstance(data, dict):
+            # Return only categories, exclude 'descriptions' key
+            categories = {k: v for k, v in data.items() if k != 'descriptions'}
+            return categories
+        return None
     except Exception as e:
         logger.error(f"Error loading categories: {e}", exc_info=True)
         return None
@@ -1081,3 +1122,97 @@ def _preload_modules_cache():
         
     except Exception as e:
         logger.error(f"Error preloading modules cache: {e}", exc_info=True)
+
+
+def _preload_module_descriptions():
+    """
+    Preload module descriptions on app startup.
+    Fetches descriptions for all module families and saves to module_categories.json.
+    Only fetches descriptions for families not already in the cache.
+    """
+    logger.info("Preloading module descriptions on startup...")
+    try:
+        # Get all module families from module -t spider
+        output, error = _call_module_command('module -t spider', timeout=60)
+        if error:
+            logger.warning(f"Failed to get module list for descriptions preload: {error}")
+            return
+        
+        if not output or not output.strip():
+            logger.warning("module -t spider returned empty output during descriptions preload")
+            return
+        
+        # Parse all modules to get ALL families
+        modules_dict = _parse_module_spider_output(output)
+        all_families = sorted(modules_dict.keys())
+        total_families = len(all_families)
+        
+        logger.info(f"Found {total_families} module families, checking for missing descriptions...")
+        
+        # Load existing descriptions cache
+        descriptions_cache = _load_descriptions_cache()
+        
+        # Find families missing descriptions
+        missing_families = [f for f in all_families if f not in descriptions_cache]
+        
+        if not missing_families:
+            logger.info("All module descriptions already cached")
+            return
+        
+        logger.info(f"Fetching descriptions for {len(missing_families)} new module families...")
+        
+        # Fetch descriptions in parallel
+        max_workers = 20
+        new_descriptions = {}
+        completed = 0
+        failed_count = 0
+        
+        def fetch_description(family_name):
+            """Fetch description for a single module family."""
+            try:
+                details, error = _get_module_details(family_name)
+                if error is not None:
+                    if "timed out" not in error.lower():
+                        logger.debug(f"Module {family_name} error: {error}")
+                    return None, None, family_name
+                if details is None:
+                    return None, None, family_name
+                description = details.get('description', '')
+                if description:
+                    return description, None, family_name
+                return '', None, family_name
+            except Exception as e:
+                logger.debug(f"Exception getting description for {family_name}: {e}")
+                return None, None, family_name
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_family = {executor.submit(fetch_description, family_name): family_name 
+                               for family_name in missing_families}
+            
+            for future in as_completed(future_to_family):
+                family_name = future_to_family[future]
+                completed += 1
+                
+                if completed % 50 == 0 or completed == len(missing_families):
+                    logger.info(f"Preloaded descriptions: {completed}/{len(missing_families)}")
+                
+                try:
+                    description, error, _ = future.result()
+                    if error is not None:
+                        failed_count += 1
+                        continue
+                    if description is not None:
+                        new_descriptions[family_name] = description
+                except Exception as e:
+                    logger.debug(f"Error processing description for {family_name}: {e}")
+                    failed_count += 1
+        
+        # Save new descriptions to module_categories.json
+        if new_descriptions:
+            _save_descriptions_cache(new_descriptions)
+            logger.info(f"Preloaded {len(new_descriptions)} new descriptions to module_categories.json ({failed_count} failed)")
+        else:
+            logger.info(f"No new descriptions to save ({failed_count} failed)")
+        
+    except Exception as e:
+        logger.error(f"Error preloading module descriptions: {e}", exc_info=True)

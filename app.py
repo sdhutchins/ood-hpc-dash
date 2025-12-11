@@ -18,7 +18,7 @@ import json
 from blueprints.editor import editor_bp
 from blueprints.envs import envs_bp
 from blueprints.jobs import jobs_bp, _preload_seff_cache
-from blueprints.modules import modules_bp, _preload_modules_cache
+from blueprints.modules import modules_bp, _preload_modules_cache, _preload_module_descriptions
 from blueprints.projects import projects_bp
 from blueprints.viewer import viewer_bp
 from blueprints.settings import settings_bp
@@ -153,6 +153,12 @@ modules_preload_thread.start()
 # This fetches seff data for all jobs from last 90 days so efficiency reports load instantly
 seff_preload_thread = threading.Thread(target=_preload_seff_cache, daemon=True)
 seff_preload_thread.start()
+
+# Preload module descriptions immediately on startup (non-blocking)
+# This fetches descriptions for all module families and saves to module_categories.json
+# Only fetches descriptions for families not already cached
+descriptions_preload_thread = threading.Thread(target=_preload_module_descriptions, daemon=True)
+descriptions_preload_thread.start()
 
 # Register blueprints
 app.register_blueprint(modules_bp)
