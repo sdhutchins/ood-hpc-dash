@@ -4,22 +4,16 @@
 <style>
 #projectsList {
     min-height: 200px;
-    transition: opacity 0.2s ease-in-out;
 }
-#projectsList.loading {
-    opacity: 0.5;
+/* Prevent layout shift during collapse animation */
+.project-card {
+    contain: layout style;
 }
-.projects-anchor-fix {
-    overflow-anchor: none;
+.project-card .card {
+    overflow: hidden;
 }
 .pagination {
     margin-top: 1rem;
-}
-.page-link {
-    transition: all 0.2s ease;
-}
-.page-link:hover {
-    transform: translateY(-1px);
 }
 </style>
 <div class="row mb-4">
@@ -195,47 +189,49 @@
 
 {%- for project in projects -%}
 {% set idx = loop.index0 %}
-<div class="row mb-2">
+<div class="row mb-2 project-card">
     <div class="col">
         <div class="card shadow-sm">
             <div class="card-body py-2 px-3">
                 <div class="d-flex justify-content-between align-items-start">
-                    <div class="flex-grow-1">
-                        <h6 class="mb-1">
+                    <div class="flex-grow-1" style="min-width: 0;">
+                        <h6 class="mb-1 text-truncate">
                             <i class="fas fa-folder me-1"></i>{{ project.name }}
                             <small class="text-muted ms-2">{{ project.path }}</small>
                         </h6>
                         <div class="d-flex flex-wrap gap-2 align-items-center small">
                             {% if project.git.dirty %}
-                                <span class="badge bg-warning text-dark" data-bs-toggle="tooltip" title="Repository has uncommitted changes">Dirty</span>
+                                <span class="badge bg-warning text-dark">Dirty</span>
                             {% elif project.git.ahead or project.git.behind %}
-                                <span class="badge bg-info" data-bs-toggle="tooltip" title="Local commits ahead of remote">Ahead</span>{%- if project.git.behind -%}<span class="badge bg-danger" data-bs-toggle="tooltip" title="Remote commits ahead of local">Behind</span>{%- endif -%}
+                                <span class="badge bg-info">Ahead</span>{%- if project.git.behind -%}<span class="badge bg-danger">Behind</span>{%- endif -%}
                             {% else %}
-                                <span class="badge bg-success" data-bs-toggle="tooltip" title="Repository is up to date with remote">Clean</span>
+                                <span class="badge bg-success">Clean</span>
                             {% endif %}
-                            <span data-bs-toggle="tooltip" title="Current git branch"><code class="small">{{ project.git.branch|default('N/A') }}</code></span>
+                            <span><code class="small">{{ project.git.branch|default('N/A') }}</code></span>
                             {% if project.git.last_commit_date %}
-                                <span class="text-muted" data-bs-toggle="tooltip" title="Last commit date">{{ project.git.last_commit_date|truncate(10, end='') }}</span>
+                                <span class="text-muted">{{ project.git.last_commit_date|truncate(10, end='') }}</span>
                             {% endif %}
                             {% set env_count = project.reproducibility.environment_files|length %}
                             {% set workflow_count = project.reproducibility.workflow_configs|length %}
                             {% if env_count > 0 or workflow_count > 0 %}
-                                <span data-bs-toggle="tooltip" title="Environment files: {{ env_count }}, Workflow configs: {{ workflow_count }}">
+                                <span>
                                     <i class="fas fa-file-code"></i> {{ env_count }} <i class="fas fa-cogs ms-1"></i> {{ workflow_count }}
                                 </span>
                             {% endif %}
                             {% if project.drift_footprint.drift_days is not none and project.drift_footprint.drift_days > 0 %}
-                                <span class="badge bg-warning text-dark" data-bs-toggle="tooltip" title="Files modified {{ project.drift_footprint.drift_days }} days after last commit (uncommitted changes detected)"><i class="fas fa-clock"></i> {{ project.drift_footprint.drift_days }}d</span>
+                                <span class="badge bg-warning text-dark"><i class="fas fa-clock"></i> {{ project.drift_footprint.drift_days }}d</span>
                             {% endif %}
                             {% if project.drift_footprint.directory_size %}
-                                <span class="text-muted" data-bs-toggle="tooltip" title="Total directory size (excluding .git)"><i class="fas fa-hdd"></i> {{ (project.drift_footprint.directory_size / 1048576)|round(1) }} MB</span>
+                                <span class="text-muted"><i class="fas fa-hdd"></i> {{ (project.drift_footprint.directory_size / 1048576)|round(1) }} MB</span>
                             {% endif %}
                         </div>
                     </div>
-                    <button class="btn btn-sm btn-outline-secondary ms-2" 
+                    <button class="btn btn-sm btn-outline-secondary ms-2 flex-shrink-0" 
+                            type="button"
                             data-bs-toggle="collapse" 
                             data-bs-target="#details-{{ idx }}"
-                            aria-expanded="false">
+                            aria-expanded="false"
+                            aria-controls="details-{{ idx }}">
                         <i class="fas fa-chevron-down" data-icon-target="details-{{ idx }}"></i>
                     </button>
                 </div>
@@ -372,8 +368,8 @@ function renderProjects(projects, total) {
                 </div>
             </div>
         </div>
-        <div id="projectsList" class="projects-anchor-fix"></div>
-        <div id="projectsPagination" class="projects-anchor-fix"></div>
+        <div id="projectsList"></div>
+        <div id="projectsPagination"></div>
     `;
     
     renderPage();
@@ -384,37 +380,24 @@ function renderPage() {
     const paginationContainer = el('projectsPagination');
     if (!listContainer || !paginationContainer) return;
     
-    // Add loading state
-    listContainer.classList.add('loading');
+    const start = (currentPage - 1) * perPage;
+    const end = start + perPage;
+    const pageProjects = allProjects.slice(start, end);
+    const totalPages = Math.ceil(allProjects.length / perPage);
     
-    // Use requestAnimationFrame for smooth transition
-    requestAnimationFrame(() => {
-        const start = (currentPage - 1) * perPage;
-        const end = start + perPage;
-        const pageProjects = allProjects.slice(start, end);
-        const totalPages = Math.ceil(allProjects.length / perPage);
-        
-        // Clear and render projects
-        listContainer.innerHTML = '';
-        pageProjects.forEach((project, index) => {
-            const div = document.createElement('div');
-            div.innerHTML = generateProjectHTML(project, start + index);
-            listContainer.appendChild(div.firstElementChild);
-        });
-        
-        // Render pagination
-        renderPagination(paginationContainer, totalPages, currentPage);
-        
-        // Remove loading state
-        listContainer.classList.remove('loading');
-        
-        // Setup collapse handlers for new content
-        setupCollapseHandlers();
-        
-        // Initialize tooltips for new content
-        initTooltips();
-        
+    // Clear and render projects
+    listContainer.innerHTML = '';
+    pageProjects.forEach((project, index) => {
+        const div = document.createElement('div');
+        div.innerHTML = generateProjectHTML(project, start + index);
+        listContainer.appendChild(div.firstElementChild);
     });
+    
+    // Render pagination
+    renderPagination(paginationContainer, totalPages, currentPage);
+    
+    // Setup collapse handlers for new content
+    setupCollapseHandlers();
 }
 
 function renderPagination(container, totalPages, current) {
@@ -485,21 +468,21 @@ function generateProjectHTML(project, index) {
     const repro = project.reproducibility || {};
     const drift = project.drift_footprint || {};
     
-    const stateBadge = git.dirty ? '<span class="badge bg-warning text-dark" data-bs-toggle="tooltip" title="Repository has uncommitted changes">Dirty</span>' :
+    const stateBadge = git.dirty ? '<span class="badge bg-warning text-dark">Dirty</span>' :
         git.ahead || git.behind ? 
-            `<span class="badge bg-info" data-bs-toggle="tooltip" title="Local commits ahead of remote">Ahead</span>${git.behind ? '<span class="badge bg-danger" data-bs-toggle="tooltip" title="Remote commits ahead of local">Behind</span>' : ''}` :
-            '<span class="badge bg-success" data-bs-toggle="tooltip" title="Repository is up to date with remote">Clean</span>';
+            `<span class="badge bg-info">Ahead</span>${git.behind ? '<span class="badge bg-danger">Behind</span>' : ''}` :
+            '<span class="badge bg-success">Clean</span>';
     
     const envCount = repro.environment_files?.length || 0;
     const workflowCount = repro.workflow_configs?.length || 0;
     const reproInfo = (envCount > 0 || workflowCount > 0) ? 
-        `<span data-bs-toggle="tooltip" title="Environment files: ${envCount}, Workflow configs: ${workflowCount}"><i class="fas fa-file-code"></i> ${envCount} <i class="fas fa-cogs ms-1"></i> ${workflowCount}</span>` : '';
+        `<span><i class="fas fa-file-code"></i> ${envCount} <i class="fas fa-cogs ms-1"></i> ${workflowCount}</span>` : '';
     
     const driftBadge = drift.drift_days > 0 ? 
-        `<span class="badge bg-warning text-dark" data-bs-toggle="tooltip" title="Files modified ${drift.drift_days} days after last commit (uncommitted changes detected)"><i class="fas fa-clock"></i> ${drift.drift_days}d</span>` : '';
+        `<span class="badge bg-warning text-dark"><i class="fas fa-clock"></i> ${drift.drift_days}d</span>` : '';
     
     const sizeInfo = drift.directory_size ? 
-        `<span class="text-muted" data-bs-toggle="tooltip" title="Total directory size (excluding .git)"><i class="fas fa-hdd"></i> ${(drift.directory_size / (1024*1024)).toFixed(1)} MB</span>` : '';
+        `<span class="text-muted"><i class="fas fa-hdd"></i> ${(drift.directory_size / (1024*1024)).toFixed(1)} MB</span>` : '';
     
     const commitDate = git.last_commit_date ? git.last_commit_date.substring(0, 10) : '';
     
@@ -511,29 +494,31 @@ function generateProjectHTML(project, index) {
         `<li>Large untracked: ${drift.large_untracked_files.length} file(s)</li>` : '';
     
     return `
-<div class="row mb-2">
+<div class="row mb-2 project-card">
     <div class="col">
         <div class="card shadow-sm">
             <div class="card-body py-2 px-3">
                 <div class="d-flex justify-content-between align-items-start">
-                    <div class="flex-grow-1">
-                        <h6 class="mb-1">
+                    <div class="flex-grow-1" style="min-width: 0;">
+                        <h6 class="mb-1 text-truncate">
                             <i class="fas fa-folder me-1"></i>${escapeHtml(project.name)}
                             <small class="text-muted ms-2">${escapeHtml(project.path)}</small>
                         </h6>
                         <div class="d-flex flex-wrap gap-2 align-items-center small">
                             ${stateBadge}
-                            <span data-bs-toggle="tooltip" title="Current git branch"><code class="small">${escapeHtml(git.branch || 'N/A')}</code></span>
-                            ${commitDate ? `<span class="text-muted" data-bs-toggle="tooltip" title="Last commit date">${commitDate}</span>` : ''}
+                            <span><code class="small">${escapeHtml(git.branch || 'N/A')}</code></span>
+                            ${commitDate ? `<span class="text-muted">${commitDate}</span>` : ''}
                             ${reproInfo}
                             ${driftBadge}
                             ${sizeInfo}
                         </div>
                     </div>
-                    <button class="btn btn-sm btn-outline-secondary ms-2" 
+                    <button class="btn btn-sm btn-outline-secondary ms-2 flex-shrink-0" 
+                            type="button"
                             data-bs-toggle="collapse" 
                             data-bs-target="#details-${index}"
-                            aria-expanded="false">
+                            aria-expanded="false"
+                            aria-controls="details-${index}">
                         <i class="fas fa-chevron-down" data-icon-target="details-${index}"></i>
                     </button>
                 </div>
@@ -601,25 +586,9 @@ function setupCollapseHandlers() {
     });
 }
 
-// Initialize tooltips
-function initTooltips() {
-    // Initialize Bootstrap tooltips for all elements with data-bs-toggle="tooltip"
-    const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-    tooltipTriggerList.map(function (tooltipTriggerEl) {
-        // Destroy existing tooltip if it exists
-        const existingTooltip = bootstrap.Tooltip.getInstance(tooltipTriggerEl);
-        if (existingTooltip) {
-            existingTooltip.dispose();
-        }
-        // Render into body to avoid layout shifts
-        return new bootstrap.Tooltip(tooltipTriggerEl, { container: 'body' });
-    });
-}
-
-// Toggle chevron icons on collapse
+// Initialize on DOM ready
 document.addEventListener('DOMContentLoaded', function() {
     setupCollapseHandlers();
-    initTooltips();
     
     const pageData = el('projectsPageData');
     if (pageData?.dataset.loading === 'true') {
