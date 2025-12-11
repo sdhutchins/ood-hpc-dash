@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__.capitalize())
 PARTITIONS_FILE = Path('logs/partitions.txt')
 SLURM_LOAD_FILE = Path('logs/slurm_load.txt')
 PARTITION_METADATA_FILE = Path('config/partition_metadata.json')
+SEFF_CACHE_FILE = Path('logs/seff_cache.json')
 
 # Common absolute paths for SLURM binaries
 SINFO_PATHS = [
@@ -116,19 +117,94 @@ def _call_squeue(user: Optional[str] = None) -> Tuple[Optional[str], Optional[st
         return None, f"Error calling squeue: {str(e)}"
 
 
-def _call_seff(job_id: str) -> Tuple[Optional[str], Optional[str]]:
+def _load_seff_cache() -> Dict[str, Dict[str, Any]]:
+    """Load seff cache from file.
+    
+    Returns:
+        Dictionary mapping job_id to cached seff data
     """
-    Call seff to get detailed job efficiency report.
+    if not SEFF_CACHE_FILE.exists():
+        return {}
+    
+    try:
+        with SEFF_CACHE_FILE.open('r', encoding='utf-8') as f:
+            cache = json.load(f)
+        if isinstance(cache, dict):
+            return cache
+        return {}
+    except Exception as e:
+        logger.warning(f"Error loading seff cache: {e}")
+        return {}
+
+
+def _save_seff_cache(cache: Dict[str, Dict[str, Any]]) -> None:
+    """Save seff cache to file.
+    
+    Args:
+        cache: Dictionary mapping job_id to cached seff data
+    """
+    try:
+        SEFF_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with SEFF_CACHE_FILE.open('w', encoding='utf-8') as f:
+            json.dump(cache, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"Error saving seff cache: {e}")
+
+
+def _is_job_recent(job_start: str, days: int = 90) -> bool:
+    """Check if a job is within the specified number of days.
+    
+    Args:
+        job_start: Job start time string (from sacct)
+        days: Number of days to check (default 90)
+    
+    Returns:
+        True if job is within the specified days, False otherwise
+    """
+    try:
+        # Parse job start time (format: YYYY-MM-DDTHH:MM:SS or YYYY-MM-DD)
+        if 'T' in job_start:
+            job_dt = datetime.fromisoformat(job_start.replace('+00:00', ''))
+        else:
+            job_dt = datetime.strptime(job_start, '%Y-%m-%d')
+        
+        days_ago = datetime.now() - timedelta(days=days)
+        return job_dt >= days_ago
+    except Exception:
+        # If we can't parse, assume it's recent to be safe
+        return True
+
+
+def _call_seff(job_id: str, use_cache: bool = True, force_refresh: bool = False) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Call seff to get detailed job efficiency report, with caching.
     
     Args:
         job_id: Job ID to get efficiency report for
+        use_cache: Whether to use cache (default True)
+        force_refresh: Force refresh even if cached (default False)
     
     Returns:
         Tuple of (output, error_message)
     """
+    # Check cache first
+    if use_cache and not force_refresh:
+        cache = _load_seff_cache()
+        if job_id in cache:
+            cached_data = cache[job_id]
+            logger.debug(f"Using cached seff data for job {job_id}")
+            return cached_data.get('output'), cached_data.get('error')
+    
+    # Not in cache or force refresh - call seff
     seff_path = find_binary(SEFF_PATHS)
     if not seff_path:
-        return None, "seff binary not found in standard locations"
+        error_msg = "seff binary not found in standard locations"
+        if use_cache:
+            # Cache the error too
+            cache = _load_seff_cache()
+            cache[job_id] = {'output': None, 'error': error_msg, 'timestamp': time.time()}
+            _save_seff_cache(cache)
+        return None, error_msg
     
     try:
         result = subprocess.run(
@@ -140,12 +216,34 @@ def _call_seff(job_id: str) -> Tuple[Optional[str], Optional[str]]:
             cwd=Path.cwd(),
         )
         if result.returncode == 0:
-            return result.stdout, None
-        return None, f"seff failed: {result.stderr}"
+            output = result.stdout
+            # Cache the result
+            if use_cache:
+                cache = _load_seff_cache()
+                cache[job_id] = {'output': output, 'error': None, 'timestamp': time.time()}
+                _save_seff_cache(cache)
+            return output, None
+        error_msg = f"seff failed: {result.stderr}"
+        # Cache the error too
+        if use_cache:
+            cache = _load_seff_cache()
+            cache[job_id] = {'output': None, 'error': error_msg, 'timestamp': time.time()}
+            _save_seff_cache(cache)
+        return None, error_msg
     except subprocess.TimeoutExpired:
-        return None, "seff command timed out"
+        error_msg = "seff command timed out"
+        if use_cache:
+            cache = _load_seff_cache()
+            cache[job_id] = {'output': None, 'error': error_msg, 'timestamp': time.time()}
+            _save_seff_cache(cache)
+        return None, error_msg
     except Exception as e:
-        return None, f"Error calling seff: {str(e)}"
+        error_msg = f"Error calling seff: {str(e)}"
+        if use_cache:
+            cache = _load_seff_cache()
+            cache[job_id] = {'output': None, 'error': error_msg, 'timestamp': time.time()}
+            _save_seff_cache(cache)
+        return None, error_msg
 
 
 def _call_sacct(user: Optional[str] = None, max_jobs: int = 100) -> Tuple[Optional[str], Optional[str]]:
@@ -765,6 +863,8 @@ def jobs_history():
 def job_efficiency(job_id: str):
     """
     Return JSON with seff efficiency report for a specific job.
+    Uses cache if available. Once cached, results are permanent unless force refreshed.
+    Only runs seff for jobs not in cache (new jobs) or when explicitly refreshed.
     
     Args:
         job_id: Job ID to get efficiency report for
@@ -772,7 +872,12 @@ def job_efficiency(job_id: str):
     Returns:
         JSON response with seff output
     """
-    output, error = _call_seff(job_id)
+    # Check if refresh was requested
+    force_refresh = request.args.get('refresh', '').lower() == 'true'
+    
+    # Always use cache unless force refresh is requested
+    # This means old jobs will always use cache, new jobs will be cached after first run
+    output, error = _call_seff(job_id, use_cache=True, force_refresh=force_refresh)
     if error:
         return jsonify({'error': error}), 500
     
