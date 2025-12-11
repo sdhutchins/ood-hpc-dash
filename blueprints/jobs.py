@@ -641,7 +641,9 @@ def _parse_start_date_for_sort(start_str: str) -> float:
 
 
 def _preload_seff_cache() -> None:
-    """Preload seff cache for all jobs from last 90 days in background."""
+    """Preload seff cache for all jobs from last 90 days in background.
+    Loops through all jobs, fetches seff data, and stores in JSON cache file.
+    """
     def preload_worker():
         """Background worker to preload seff data."""
         try:
@@ -660,33 +662,79 @@ def _preload_seff_cache() -> None:
             jobs = _parse_sacct_output(output)
             logger.info(f"Preloading seff data for {len(jobs)} jobs...")
             
-            # Load existing cache
+            # Load existing cache once
             cache = _load_seff_cache()
-            cached_count = 0
+            cached_count = len([j for j in jobs if j.get('id') in cache])
             new_count = 0
+            failed_count = 0
             
-            for job in jobs:
+            seff_path = find_binary(SEFF_PATHS)
+            if not seff_path:
+                logger.warning("seff binary not found, skipping seff preload")
+                return
+            
+            # Process jobs one by one and update cache
+            for idx, job in enumerate(jobs, 1):
                 job_id = job.get('id')
                 if not job_id:
                     continue
                 
                 # Skip if already cached
                 if job_id in cache:
-                    cached_count += 1
                     continue
                 
-                # Fetch seff data (this will cache it)
+                # Fetch seff data directly (don't use _call_seff to avoid cache thrashing)
                 try:
-                    output, error = _call_seff(job_id, use_cache=True, force_refresh=False)
-                    if output:
+                    result = subprocess.run(
+                        [seff_path, job_id],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        env={'PATH': '/usr/bin:/bin'},
+                        cwd=Path.cwd(),
+                    )
+                    
+                    if result.returncode == 0:
+                        output = result.stdout
+                        cache[job_id] = {
+                            'output': output,
+                            'error': None,
+                            'timestamp': time.time(),
+                        }
                         new_count += 1
-                        if new_count % 10 == 0:
-                            logger.info(f"Preloaded {new_count} new seff entries ({cached_count} already cached)")
+                    else:
+                        error_msg = f"seff failed: {result.stderr}"
+                        cache[job_id] = {
+                            'output': None,
+                            'error': error_msg,
+                            'timestamp': time.time(),
+                        }
+                        failed_count += 1
+                    
+                    # Save cache periodically (every 10 jobs) and at the end
+                    if new_count % 10 == 0 or idx == len(jobs):
+                        _save_seff_cache(cache)
+                        logger.info(f"Seff preload progress: {new_count} new, {cached_count} cached, {failed_count} failed ({idx}/{len(jobs)})")
+                        
+                except subprocess.TimeoutExpired:
+                    cache[job_id] = {
+                        'output': None,
+                        'error': 'seff command timed out',
+                        'timestamp': time.time(),
+                    }
+                    failed_count += 1
                 except Exception as e:
                     logger.debug(f"Error preloading seff for job {job_id}: {e}")
-                    continue
+                    cache[job_id] = {
+                        'output': None,
+                        'error': f"Error calling seff: {str(e)}",
+                        'timestamp': time.time(),
+                    }
+                    failed_count += 1
             
-            logger.info(f"Seff preload complete: {new_count} new entries, {cached_count} already cached")
+            # Final save
+            _save_seff_cache(cache)
+            logger.info(f"Seff preload complete: {new_count} new entries, {cached_count} already cached, {failed_count} failed")
         except Exception as e:
             logger.error(f"Error in seff preload worker: {e}", exc_info=True)
     
