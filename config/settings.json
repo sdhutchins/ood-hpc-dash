@@ -5,6 +5,8 @@
         "$HOME/.conda"
     ],
     "project_directories": [
-        "/data/project/worthey_lab/projects/PAH_RHamid"
+        "/data/project/worthey_lab/projects/PAH_RHamid/analysis",
+        "/data/project/worthey_lab/projects/PAH_RHamid/support",
+        "/data/project/worthey_lab/projects/experimental_pipelines/sdhutchins"
     ]
 }
