@@ -779,6 +779,11 @@ def projects_status():
         settings = load_settings()
         project_dirs = settings.get(PROJECT_DIRS_CONFIG_KEY, [])
         
+        # Ensure project_dirs is a list
+        if not isinstance(project_dirs, list):
+            logger.warning(f"project_dirs is not a list: {type(project_dirs)}, converting")
+            project_dirs = [project_dirs] if project_dirs else []
+        
         if not project_dirs:
             return jsonify({
                 'projects': [],
@@ -786,6 +791,7 @@ def projects_status():
                 'error': 'No project directories configured',
             }), 200
         
+        logger.info(f"Processing {len(project_dirs)} project directories: {project_dirs}")
         projects_data, error = _collect_projects_data(project_dirs)
         
         # Ensure all data is JSON-serializable

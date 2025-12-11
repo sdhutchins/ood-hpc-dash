@@ -82,9 +82,16 @@ def save_settings():
             # Remove duplicates while preserving order
             seen = set()
             project_directories = [p for p in project_directories if not (p in seen or seen.add(p))]
+            # Validate paths are not empty and are strings
+            project_directories = [p for p in project_directories if p and isinstance(p, str)]
             logger.info(f"Parsed {len(project_directories)} project directories: {project_directories}")
         else:
             project_directories = defaults.get('project_directories', [])
+        
+        # Ensure it's a list
+        if not isinstance(project_directories, list):
+            logger.warning(f"project_directories is not a list: {type(project_directories)}, converting")
+            project_directories = [project_directories] if project_directories else []
         
         # Validate navbar color against allowed list
         allowed_values = {c[0] for c in ALLOWED_NAV_COLORS}
