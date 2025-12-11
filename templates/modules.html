@@ -85,6 +85,11 @@
                         <span id="descriptionsLoadingText">Loading descriptions...</span>
                         <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
                     </div>
+                    <div id="descriptionsCompleteAlert" class="alert alert-success alert-dismissible fade show d-none mt-2 mb-0" role="alert">
+                        <i class="fas fa-check-circle me-2"></i>
+                        <strong>Descriptions loaded!</strong> Please <a href="javascript:location.reload()" class="alert-link">reload the page</a> to see all module descriptions.
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
                 </div>
                 <div class="card-body p-0">
                     <div class="table-responsive">
@@ -1015,6 +1020,127 @@
                 
                 // Remove the old eventSource code that was here
             });
+        }
+        
+        // Watch for description preloading completion (startup background task)
+        let lastFileMtime = null;
+        let descriptionsWatchInterval = null;
+        let descriptionsUpdateInterval = null;
+        
+        function updateDescriptionsOnPage() {
+            // Fetch updated descriptions and update the page
+            fetch('{{ url_for("modules.descriptions_update") }}')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.descriptions && Object.keys(data.descriptions).length > 0) {
+                        let updatedCount = 0;
+                        const tbody = document.getElementById('modulesTableBody');
+                        
+                        // Update descriptions in allModules array
+                        Object.keys(data.descriptions).forEach(baseName => {
+                            const description = data.descriptions[baseName];
+                            const moduleIndex = allModules.findIndex(m => m.name === baseName);
+                            if (moduleIndex !== -1 && (!allModules[moduleIndex].description || allModules[moduleIndex].description.trim() === '')) {
+                                allModules[moduleIndex].description = description;
+                                updatedCount++;
+                            }
+                        });
+                        
+                        // Update the table if we have updates
+                        if (updatedCount > 0 && tbody) {
+                            const rows = tbody.querySelectorAll('tr.module-row');
+                            rows.forEach(row => {
+                                const nameCell = row.querySelector('td:first-child code');
+                                if (nameCell) {
+                                    const moduleName = nameCell.textContent.trim();
+                                    if (data.descriptions[moduleName]) {
+                                        const descCell = row.querySelector('td:nth-child(2)');
+                                        if (descCell) {
+                                            const description = data.descriptions[moduleName];
+                                            if (description && description.trim()) {
+                                                descCell.innerHTML = '<small class="text-muted">' + escapeHtml(description) + '</small>';
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                            
+                            // Show loading alert if descriptions are still being loaded
+                            const modulesNeedingDescriptions = allModules.filter(m => !m.description || m.description.trim() === '');
+                            const descriptionsAlert = document.getElementById('descriptionsLoadingAlert');
+                            if (descriptionsAlert) {
+                                if (modulesNeedingDescriptions.length > 0) {
+                                    descriptionsAlert.classList.remove('d-none');
+                                    document.getElementById('descriptionsLoadingText').textContent = 
+                                        `Loading descriptions... (${modulesNeedingDescriptions.length} remaining)`;
+                                } else {
+                                    descriptionsAlert.classList.add('d-none');
+                                    // Show completion alert
+                                    const completeAlert = document.getElementById('descriptionsCompleteAlert');
+                                    if (completeAlert) {
+                                        completeAlert.classList.remove('d-none');
+                                    }
+                                    // Stop updating
+                                    if (descriptionsUpdateInterval) {
+                                        clearInterval(descriptionsUpdateInterval);
+                                        descriptionsUpdateInterval = null;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.debug('Error updating descriptions:', error);
+                });
+        }
+        
+        function checkDescriptionsStatus() {
+            fetch('{{ url_for("modules.descriptions_status") }}')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.file_exists && data.file_mtime) {
+                        // First time seeing the file - record the mtime
+                        if (lastFileMtime === null) {
+                            lastFileMtime = data.file_mtime;
+                            // Check if we have modules without descriptions
+                            const modulesNeedingDescriptions = allModules.filter(m => !m.description || m.description.trim() === '');
+                            if (modulesNeedingDescriptions.length > 0) {
+                                const descriptionsAlert = document.getElementById('descriptionsLoadingAlert');
+                                if (descriptionsAlert) {
+                                    descriptionsAlert.classList.remove('d-none');
+                                    document.getElementById('descriptionsLoadingText').textContent = 'Loading descriptions in background...';
+                                }
+                                // Start updating descriptions on page
+                                updateDescriptionsOnPage();
+                                descriptionsUpdateInterval = setInterval(updateDescriptionsOnPage, 3000);
+                            }
+                        } else if (data.file_mtime > lastFileMtime) {
+                            // File was updated - update last mtime
+                            lastFileMtime = data.file_mtime;
+                            // Update descriptions on page immediately
+                            updateDescriptionsOnPage();
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.debug('Error checking descriptions status:', error);
+                });
+        }
+        
+        // Start watching for description preloading (check every 5 seconds)
+        // Only watch if we have modules that might need descriptions
+        if (allModules.length > 0) {
+            const modulesNeedingDescriptions = allModules.filter(m => !m.description || m.description.trim() === '');
+            if (modulesNeedingDescriptions.length > 0) {
+                // Initial check
+                checkDescriptionsStatus();
+                // Then check every 5 seconds for file updates
+                descriptionsWatchInterval = setInterval(checkDescriptionsStatus, 5000);
+                // Also start updating descriptions on page every 3 seconds
+                updateDescriptionsOnPage();
+                descriptionsUpdateInterval = setInterval(updateDescriptionsOnPage, 3000);
+            }
         }
     });
 })();

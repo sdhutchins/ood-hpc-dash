@@ -192,6 +192,12 @@ def _call_seff(job_id: str, use_cache: bool = True, force_refresh: bool = False)
     # Check cache first
     if use_cache and not force_refresh:
         cache = _load_seff_cache()
+        # Ensure cache file exists (create if it doesn't)
+        if not SEFF_CACHE_FILE.exists():
+            SEFF_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _save_seff_cache({})
+            cache = {}
+        
         if job_id in cache:
             cached_data = cache[job_id]
             logger.debug(f"Using cached seff data for job {job_id}")
@@ -683,8 +689,14 @@ def _preload_seff_cache() -> None:
             jobs = _parse_sacct_output(output)
             logger.info(f"Preloading seff data for {len(jobs)} jobs...")
             
-            # Load existing cache once
+            # Load existing cache once (create empty file if it doesn't exist)
             cache = _load_seff_cache()
+            if not SEFF_CACHE_FILE.exists():
+                # Create empty cache file
+                SEFF_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                _save_seff_cache({})
+                cache = {}
+            
             cached_count = len([j for j in jobs if j.get('id') in cache])
             new_count = 0
             failed_count = 0

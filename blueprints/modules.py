@@ -851,6 +851,75 @@ def modules_list():
     })
 
 
+@modules_bp.route('/descriptions-status')
+def descriptions_status():
+    """Return status of module descriptions loading and file modification time."""
+    try:
+        file_mtime = None
+        if CATEGORIES_FILE.exists():
+            file_mtime = CATEGORIES_FILE.stat().st_mtime
+        
+        return jsonify({
+            'file_exists': CATEGORIES_FILE.exists(),
+            'file_mtime': file_mtime,
+            'loading': _streaming_in_progress,
+        })
+    except Exception as e:
+        logger.error(f"Error getting descriptions status: {e}")
+        return jsonify({
+            'file_exists': False,
+            'file_mtime': None,
+            'loading': False,
+            'error': str(e),
+        })
+
+
+@modules_bp.route('/descriptions-update')
+def descriptions_update():
+    """Return updated descriptions from cache for modules on the page."""
+    try:
+        descriptions_cache = _load_descriptions_cache()
+        
+        # Get all modules from cache to map family names to base names
+        grouped_modules = _get_cached_modules()
+        
+        # Build mapping of base_name -> description
+        # We need to map from module family names to base names
+        base_name_to_description = {}
+        
+        # Parse module_categories.json to get family name mappings
+        categories_config = _load_categories()
+        
+        # For each module, try to find its description
+        # Module names in the cache are base names (e.g., "zlib"), but descriptions are keyed by family names
+        # We need to reverse-engineer the family name from the base name
+        for module in grouped_modules:
+            base_name = module['name']
+            # Try to find description by checking if base_name matches a family name
+            # or if any family name starts with base_name
+            description = ''
+            for family_name, desc in descriptions_cache.items():
+                # Check if family name matches base name or starts with it
+                if family_name == base_name or family_name.startswith(base_name + '/'):
+                    description = desc
+                    break
+            
+            if description:
+                base_name_to_description[base_name] = description
+        
+        return jsonify({
+            'descriptions': base_name_to_description,
+            'count': len(base_name_to_description),
+        })
+    except Exception as e:
+        logger.error(f"Error getting descriptions update: {e}")
+        return jsonify({
+            'descriptions': {},
+            'count': 0,
+            'error': str(e),
+        })
+
+
 @modules_bp.route('/refresh-start', methods=['POST'])
 def refresh_start():
     """Start refresh process by clearing cache."""
@@ -1193,21 +1262,34 @@ def _preload_module_descriptions():
                 family_name = future_to_family[future]
                 completed += 1
                 
-                if completed % 50 == 0 or completed == len(missing_families):
-                    logger.info(f"Preloaded descriptions: {completed}/{len(missing_families)}")
-                
                 try:
                     description, error, _ = future.result()
                     if error is not None:
                         failed_count += 1
-                        continue
-                    if description is not None:
+                        # Store empty string to mark as processed (even if failed)
+                        new_descriptions[family_name] = ''
+                    elif description is not None:
+                        # Store description (could be empty string or actual description)
                         new_descriptions[family_name] = description
+                    else:
+                        # None means error occurred, mark as processed with empty string
+                        new_descriptions[family_name] = ''
+                        failed_count += 1
                 except Exception as e:
                     logger.debug(f"Error processing description for {family_name}: {e}")
+                    new_descriptions[family_name] = ''  # Mark as processed
                     failed_count += 1
+                
+                # Save incrementally every 50 items or at completion
+                if completed % 50 == 0 or completed == len(missing_families):
+                    if new_descriptions:
+                        # Save what we have so far
+                        _save_descriptions_cache(new_descriptions)
+                        logger.info(f"Preloaded descriptions: {completed}/{len(missing_families)} ({len(new_descriptions)} saved so far, {failed_count} failed)")
+                    else:
+                        logger.info(f"Preloaded descriptions: {completed}/{len(missing_families)} ({failed_count} failed)")
         
-        # Save new descriptions to module_categories.json
+        # Final save (in case there were fewer than 50 items)
         if new_descriptions:
             _save_descriptions_cache(new_descriptions)
             logger.info(f"Preloaded {len(new_descriptions)} new descriptions to module_categories.json ({failed_count} failed)")
