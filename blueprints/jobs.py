@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import subprocess
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -588,22 +589,111 @@ def _parse_sacct_output(output: str) -> List[Dict[str, Any]]:
         except (ValueError, AttributeError):
             memory_mb = 0.0
         
+        # Calculate elapsed seconds for sorting
+        elapsed_seconds = _parse_time_to_seconds(elapsed)
+        # Calculate start timestamp for sorting
+        start_timestamp = _parse_start_date_for_sort(start)
+        
         jobs.append({
             'id': job_id,
             'name': job_name,
             'state': state,
             'partition': partition,
             'start': start,
+            'start_timestamp': start_timestamp,  # For sorting
             'end': end,
             'elapsed': elapsed,
+            'elapsed_seconds': elapsed_seconds,  # For sorting
             'req_cpus': req_cpus,
             'alloc_cpus': alloc_cpus,
             'max_rss': max_rss,
-            'cpu_efficiency': round(cpu_efficiency, 1),
+            'cpu_efficiency': round(cpu_efficiency, 1),  # Keep for seff details
             'memory_mb': round(memory_mb, 1),
         })
     
+    # Sort by start date (most recent first)
+    jobs.sort(key=lambda x: _parse_start_date_for_sort(x.get('start', '')), reverse=True)
+    
     return jobs
+
+
+def _parse_start_date_for_sort(start_str: str) -> float:
+    """Parse start date string for sorting (most recent first).
+    
+    Args:
+        start_str: Start date string from sacct
+    
+    Returns:
+        Timestamp as float (0.0 if parsing fails)
+    """
+    if not start_str or start_str == 'N/A':
+        return 0.0
+    
+    try:
+        # Format: YYYY-MM-DDTHH:MM:SS or YYYY-MM-DD
+        if 'T' in start_str:
+            dt = datetime.fromisoformat(start_str.replace('+00:00', ''))
+        else:
+            dt = datetime.strptime(start_str, '%Y-%m-%d')
+        return dt.timestamp()
+    except Exception:
+        return 0.0
+
+
+def _preload_seff_cache() -> None:
+    """Preload seff cache for all jobs from last 90 days in background."""
+    def preload_worker():
+        """Background worker to preload seff data."""
+        try:
+            logger.info("Starting seff cache preload in background...")
+            username = os.environ.get('USER', '')
+            if not username:
+                logger.warning("No username found, skipping seff preload")
+                return
+            
+            # Get all jobs from last 90 days
+            output, error = _call_sacct(user=username, max_jobs=1000)
+            if error or not output:
+                logger.warning(f"Failed to get jobs for seff preload: {error}")
+                return
+            
+            jobs = _parse_sacct_output(output)
+            logger.info(f"Preloading seff data for {len(jobs)} jobs...")
+            
+            # Load existing cache
+            cache = _load_seff_cache()
+            cached_count = 0
+            new_count = 0
+            
+            for job in jobs:
+                job_id = job.get('id')
+                if not job_id:
+                    continue
+                
+                # Skip if already cached
+                if job_id in cache:
+                    cached_count += 1
+                    continue
+                
+                # Fetch seff data (this will cache it)
+                try:
+                    output, error = _call_seff(job_id, use_cache=True, force_refresh=False)
+                    if output:
+                        new_count += 1
+                        if new_count % 10 == 0:
+                            logger.info(f"Preloaded {new_count} new seff entries ({cached_count} already cached)")
+                except Exception as e:
+                    logger.debug(f"Error preloading seff for job {job_id}: {e}")
+                    continue
+            
+            logger.info(f"Seff preload complete: {new_count} new entries, {cached_count} already cached")
+        except Exception as e:
+            logger.error(f"Error in seff preload worker: {e}", exc_info=True)
+    
+    # Start background thread
+    thread = threading.Thread(target=preload_worker, daemon=True)
+    thread.start()
+    logger.info("Started seff cache preload thread")
 
 
 def _parse_time_to_seconds(time_str: str) -> int:
@@ -677,6 +767,7 @@ def jobs():
         output, error_msg = _call_sacct(user=username, max_jobs=1000)  # Get more jobs for pagination
         if not error_msg and output:
             all_jobs = _parse_sacct_output(output)
+            # Jobs are already sorted by most recent first in _parse_sacct_output
             total_history = len(all_jobs)
             # Apply pagination
             offset = (current_page - 1) * per_page

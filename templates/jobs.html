@@ -106,11 +106,10 @@
                                 <th>Name</th>
                                 <th>State</th>
                                 <th>Partition</th>
-                                <th>Start Date</th>
-                                <th>Elapsed</th>
+                                <th class="sortable" data-sort="start">Start Date <i class="bi bi-arrow-down-up"></i></th>
+                                <th class="sortable" data-sort="elapsed">Elapsed <i class="bi bi-arrow-down-up"></i></th>
                                 <th>CPUs</th>
                                 <th>Memory</th>
-                                <th>CPU Efficiency</th>
                                 <th>Details</th>
                             </tr>
                         </thead>
@@ -129,27 +128,16 @@
                                     {% endif %}
                                 </td>
                                 <td><code>{{ job.partition }}</code></td>
-                                <td>
+                                <td data-sort-value="{{ job.start_timestamp|default(0) }}">
                                     {% if job.start and job.start != 'N/A' %}
                                         <small>{{ job.start|truncate(10, end='') }}</small>
                                     {% else %}
                                         <small class="text-muted">N/A</small>
                                     {% endif %}
                                 </td>
-                                <td><small>{{ job.elapsed }}</small></td>
+                                <td data-sort-value="{{ job.elapsed_seconds|default(0) }}" data-sort-type="elapsed"><small>{{ job.elapsed }}</small></td>
                                 <td><small>{{ job.alloc_cpus }}/{{ job.req_cpus }}</small></td>
                                 <td><small>{{ job.max_rss }}</small></td>
-                                <td>
-                                    {% if job.cpu_efficiency >= 80 %}
-                                        <span class="badge bg-success">{{ job.cpu_efficiency }}%</span>
-                                    {% elif job.cpu_efficiency >= 50 %}
-                                        <span class="badge bg-info">{{ job.cpu_efficiency }}%</span>
-                                    {% elif job.cpu_efficiency > 0 %}
-                                        <span class="badge bg-warning text-dark">{{ job.cpu_efficiency }}%</span>
-                                    {% else %}
-                                        <span class="badge bg-secondary">N/A</span>
-                                    {% endif %}
-                                </td>
                                 <td>
                                     {% set job_id_safe = job.id|replace('.', '_')|replace('-', '_') %}
                                     <button class="btn btn-sm btn-outline-secondary" 
@@ -162,7 +150,7 @@
                                 </td>
                             </tr>
                             <tr class="collapse" id="details-{{ job_id_safe }}">
-                                <td colspan="10" class="p-0">
+                                <td colspan="9" class="p-0">
                                     <div class="card card-body m-2 bg-light">
                                         <div class="d-flex justify-content-between align-items-center mb-2">
                                             <strong>Job Efficiency Report (seff)</strong>
@@ -591,27 +579,25 @@ function sortTable(columnIndex) {
                         stateBadge = `<span class="badge bg-secondary">${job.state}</span>`;
                     }
                     
-                    // CPU efficiency badge
-                    let efficiencyBadge = '';
-                    if (job.cpu_efficiency >= 80) {
-                        efficiencyBadge = `<span class="badge bg-success">${job.cpu_efficiency}%</span>`;
-                    } else if (job.cpu_efficiency >= 50) {
-                        efficiencyBadge = `<span class="badge bg-info">${job.cpu_efficiency}%</span>`;
-                    } else if (job.cpu_efficiency > 0) {
-                        efficiencyBadge = `<span class="badge bg-warning text-dark">${job.cpu_efficiency}%</span>`;
-                    } else {
-                        efficiencyBadge = '<span class="badge bg-secondary">N/A</span>';
-                    }
-                    
+                    const safeJobId = job.id.replace(/[.-]/g, '_');
                     row.innerHTML = `
                         <td><code>${job.id}</code></td>
                         <td>${job.name}</td>
                         <td>${stateBadge}</td>
                         <td><code>${job.partition}</code></td>
-                        <td><small>${job.elapsed}</small></td>
+                        <td data-sort-value="${job.start_timestamp || 0}"><small>${job.start || 'N/A'}</small></td>
+                        <td data-sort-value="${job.elapsed_seconds || 0}" data-sort-type="elapsed"><small>${job.elapsed}</small></td>
                         <td><small>${job.alloc_cpus}/${job.req_cpus}</small></td>
                         <td><small>${job.max_rss}</small></td>
-                        <td>${efficiencyBadge}</td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-secondary" 
+                                    onclick="showJobDetails('${job.id}', '${safeJobId}')"
+                                    data-bs-toggle="collapse" 
+                                    data-bs-target="#details-${safeJobId}"
+                                    aria-expanded="false">
+                                <i class="fas fa-info-circle"></i>
+                            </button>
+                        </td>
                     `;
                     tbody.appendChild(row);
                 });
@@ -747,5 +733,83 @@ function sortTable(columnIndex) {
     // Make functions available globally
     window.showJobDetails = showJobDetails;
     window.hideJobDetails = hideJobDetails;
+    
+    // Table sorting functionality
+    document.addEventListener('DOMContentLoaded', function() {
+        const table = document.getElementById('historyTable');
+        if (!table) return;
+        
+        const headers = table.querySelectorAll('th.sortable');
+        let sortColumn = null;
+        let sortDirection = 'desc'; // Default: most recent first
+        
+        headers.forEach(header => {
+            header.style.cursor = 'pointer';
+            header.addEventListener('click', function() {
+                const column = this.dataset.sort;
+                if (sortColumn === column) {
+                    // Toggle direction
+                    sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+                } else {
+                    sortColumn = column;
+                    sortDirection = 'asc';
+                }
+                
+                // Update header indicators
+                headers.forEach(h => {
+                    h.innerHTML = h.innerHTML.replace(/<i[^>]*><\/i>/g, '');
+                    if (h === this) {
+                        const icon = sortDirection === 'asc' ? '↑' : '↓';
+                        h.innerHTML += ` <i>${icon}</i>`;
+                    }
+                });
+                
+                // Sort table
+                sortTable(column, sortDirection);
+            });
+        });
+        
+        function sortTable(column, direction) {
+            const tbody = table.querySelector('tbody');
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            
+            rows.sort((a, b) => {
+                let aVal, bVal;
+                
+                if (column === 'start') {
+                    // Find the start date column (4th column, index 4)
+                    const aTds = a.querySelectorAll('td');
+                    const bTds = b.querySelectorAll('td');
+                    if (aTds.length > 4 && aTds[4].hasAttribute('data-sort-value')) {
+                        aVal = parseFloat(aTds[4].dataset.sortValue || 0);
+                    } else {
+                        aVal = 0;
+                    }
+                    if (bTds.length > 4 && bTds[4].hasAttribute('data-sort-value')) {
+                        bVal = parseFloat(bTds[4].dataset.sortValue || 0);
+                    } else {
+                        bVal = 0;
+                    }
+                } else if (column === 'elapsed') {
+                    // Find the elapsed column by data-sort-type attribute
+                    const aElapsed = a.querySelector('td[data-sort-type="elapsed"]');
+                    const bElapsed = b.querySelector('td[data-sort-type="elapsed"]');
+                    aVal = parseFloat(aElapsed?.dataset.sortValue || 0);
+                    bVal = parseFloat(bElapsed?.dataset.sortValue || 0);
+                } else {
+                    return 0;
+                }
+                
+                if (direction === 'asc') {
+                    return aVal - bVal;
+                } else {
+                    return bVal - aVal;
+                }
+            });
+            
+            // Re-append sorted rows
+            rows.forEach(row => tbody.appendChild(row));
+        }
+    });
 </script>
 {% endblock %}

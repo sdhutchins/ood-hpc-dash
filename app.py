@@ -17,7 +17,7 @@ import json
 # Local imports
 from blueprints.editor import editor_bp
 from blueprints.envs import envs_bp
-from blueprints.jobs import jobs_bp
+from blueprints.jobs import jobs_bp, _preload_seff_cache
 from blueprints.modules import modules_bp, _preload_modules_cache
 from blueprints.projects import projects_bp
 from blueprints.viewer import viewer_bp
@@ -148,6 +148,11 @@ quota_thread.start()
 # This runs module -t spider and populates the cache so modules page loads instantly
 modules_preload_thread = threading.Thread(target=_preload_modules_cache, daemon=True)
 modules_preload_thread.start()
+
+# Preload seff cache immediately on startup (non-blocking)
+# This fetches seff data for all jobs from last 90 days so efficiency reports load instantly
+seff_preload_thread = threading.Thread(target=_preload_seff_cache, daemon=True)
+seff_preload_thread.start()
 
 # Register blueprints
 app.register_blueprint(modules_bp)
