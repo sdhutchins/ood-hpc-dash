@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,6 +19,8 @@ projects_bp = Blueprint('projects', __name__, url_prefix='/projects')
 logger = logging.getLogger(__name__.capitalize())
 
 PROJECT_DIRS_CONFIG_KEY = 'project_directories'
+PROJECTS_CACHE_FILE = Path('logs/projects_cache.json')
+CACHE_VALIDITY_SECONDS = 3600  # 1 hour
 
 
 def _find_git_status_checker() -> Optional[str]:
@@ -666,9 +669,110 @@ def _process_repo(repo_path: Path, repo_status: Optional[Dict[str, Any]] = None)
     }
 
 
-def _collect_projects_data(project_dirs: List[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+def _load_projects_cache() -> Optional[Dict[str, Any]]:
+    """Load projects cache from file.
+    
+    Returns:
+        Cache dict with 'timestamp', 'directories', and 'projects', or None if invalid
     """
-    Collect project data from git-status-checker or fallback.
+    if not PROJECTS_CACHE_FILE.exists():
+        return None
+    
+    try:
+        with PROJECTS_CACHE_FILE.open('r', encoding='utf-8') as f:
+            cache = json.load(f)
+        
+        # Check if cache is still valid (less than 1 hour old)
+        cache_age = time.time() - cache.get('timestamp', 0)
+        if cache_age > CACHE_VALIDITY_SECONDS:
+            logger.info(f"Projects cache expired (age: {cache_age:.0f}s)")
+            return None
+        
+        logger.info(f"Loaded projects cache (age: {cache_age:.0f}s, {len(cache.get('projects', []))} projects)")
+        return cache
+    except Exception as e:
+        logger.warning(f"Error loading projects cache: {e}")
+        return None
+
+
+def _save_projects_cache(projects_data: List[Dict[str, Any]], directories: List[str]) -> None:
+    """Save projects cache to file.
+    
+    Args:
+        projects_data: List of project data dictionaries
+        directories: List of directories that were scanned
+    """
+    try:
+        PROJECTS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cache = {
+            'timestamp': time.time(),
+            'directories': directories,
+            'projects': projects_data,
+        }
+        with PROJECTS_CACHE_FILE.open('w', encoding='utf-8') as f:
+            json.dump(cache, f, indent=2, ensure_ascii=False)
+        logger.info(f"Saved projects cache: {len(projects_data)} projects from {len(directories)} directories")
+    except Exception as e:
+        logger.warning(f"Error saving projects cache: {e}")
+
+
+def _collect_projects_data(project_dirs: List[str], use_cache: bool = True) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """
+    Collect project data from cache or by scanning directories.
+    Uses cache if valid (< 1 hour old) and directories match.
+    When new directories are added, only scans new ones and merges with cache.
+    
+    Args:
+        project_dirs: List of project directories to scan
+        use_cache: Whether to use cache (default True)
+    
+    Returns:
+        Tuple of (projects_data_list, error_message)
+    """
+    # Normalize directory paths for comparison
+    normalized_dirs = sorted([expand_path(d) for d in project_dirs])
+    
+    # Try to load from cache
+    cached_data = None
+    if use_cache:
+        cached_data = _load_projects_cache()
+        if cached_data:
+            cached_dirs = sorted([expand_path(d) for d in cached_data.get('directories', [])])
+            # Check if all cached directories are still in the current list
+            if set(cached_dirs).issubset(set(normalized_dirs)):
+                # Check if there are new directories to scan
+                new_dirs = [d for d in normalized_dirs if d not in cached_dirs]
+                if not new_dirs:
+                    # All directories are cached and no new ones - return cache
+                    logger.info(f"Using cached projects data: {len(cached_data.get('projects', []))} projects")
+                    return cached_data.get('projects', []), None
+                else:
+                    # Some new directories - scan only those and merge
+                    logger.info(f"Cache found for {len(cached_dirs)} directories, scanning {len(new_dirs)} new directories")
+                    cached_projects = cached_data.get('projects', [])
+                    # Scan new directories
+                    new_projects_data, new_error = _scan_directories(new_dirs)
+                    # Merge: combine cached and new, remove duplicates by path
+                    all_projects = {p['path']: p for p in cached_projects}
+                    all_projects.update({p['path']: p for p in new_projects_data})
+                    merged_projects = list(all_projects.values())
+                    merged_projects.sort(key=lambda x: x['name'].lower())
+                    # Save updated cache
+                    _save_projects_cache(merged_projects, normalized_dirs)
+                    logger.info(f"Merged cache with new scan: {len(merged_projects)} total projects")
+                    return merged_projects, new_error
+    
+    # No valid cache or cache disabled - scan all directories
+    logger.info(f"Scanning {len(normalized_dirs)} directories (cache miss or disabled)")
+    projects_data, error = _scan_directories(normalized_dirs)
+    if projects_data:
+        _save_projects_cache(projects_data, normalized_dirs)
+    return projects_data, error
+
+
+def _scan_directories(project_dirs: List[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """
+    Scan directories for git repositories and collect project data.
     
     Args:
         project_dirs: List of project directories to scan
@@ -792,7 +896,9 @@ def projects_status():
             }), 200
         
         logger.info(f"Processing {len(project_dirs)} project directories: {project_dirs}")
-        projects_data, error = _collect_projects_data(project_dirs)
+        # Check if refresh was requested (force cache refresh)
+        force_refresh = request.args.get('refresh', '').lower() == 'true'
+        projects_data, error = _collect_projects_data(project_dirs, use_cache=not force_refresh)
         
         # Ensure all data is JSON-serializable
         try:
