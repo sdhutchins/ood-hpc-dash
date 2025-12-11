@@ -896,82 +896,48 @@ def _scan_directories(project_dirs: List[str]) -> Tuple[List[Dict[str, Any]], Op
     Returns:
         Tuple of (projects_data_list, error_message)
     """
-    projects_data = []
-    errors = []
+    projects_data: List[Dict[str, Any]] = []
+    errors: List[str] = []
     
-    # Try git-status-checker first
-    git_status_data, git_error = _call_git_status_checker(project_dirs)
-    repositories = git_status_data.get('repositories', []) if git_status_data else []
-    
-    # Use git-status-checker results if available
-    if git_status_data and repositories:
-        logger.info(f"Using git-status-checker results: {len(repositories)} repositories")
-        skipped_repos = []
-        for repo_status in repositories:
+    # Simple mode: skip git-status-checker and do a direct repo scan.
+    repos = _find_git_repos(project_dirs)
+    if repos:
+        logger.info(f"Found {len(repos)} repositories via manual scan")
+        skipped_repos: List[str] = []
+        for repo_path in repos:
             try:
-                repo_path_str = repo_status.get('path', '')
-                repo_path = Path(repo_path_str)
-                if not repo_path.exists():
-                    logger.warning(f"Repository path does not exist: {repo_path}")
-                    skipped_repos.append(str(repo_path))
-                    continue
-                
-                project = _process_repo(repo_path, repo_status)
+                project = _process_repo(repo_path)
                 if project:
                     projects_data.append(project)
                 else:
-                    # _process_repo returns None for various reasons - log but don't treat as error
                     logger.debug(f"Skipped processing repository {repo_path} (returned None)")
                     skipped_repos.append(str(repo_path))
             except (PermissionError, OSError) as e:
                 # Permission/authentication errors - skip this repo but continue
-                repo_name = repo_status.get('path', 'unknown')
-                logger.warning(f"Skipping repository {repo_name} due to permission/authentication error: {e}")
-                skipped_repos.append(repo_name)
+                logger.warning(
+                    f"Skipping repository {repo_path} due to permission/authentication error: {e}"
+                )
+                skipped_repos.append(str(repo_path))
             except Exception as e:
                 # Other errors - log but continue processing
-                repo_name = repo_status.get('path', 'unknown')
-                logger.warning(f"Error processing repository {repo_name}: {e}")
-                skipped_repos.append(repo_name)
+                logger.warning(f"Error processing repository {repo_path}: {e}")
+                skipped_repos.append(str(repo_path))
         
         if skipped_repos:
-            logger.info(f"Skipped {len(skipped_repos)} repositories: {', '.join(skipped_repos[:5])}{'...' if len(skipped_repos) > 5 else ''}")
-            if len(errors) == 0:
-                errors.append(f"Skipped {len(skipped_repos)} repository/repositories (permission errors or processing issues)")
+            logger.info(
+                "Skipped %d repositories: %s%s",
+                len(skipped_repos),
+                ", ".join(skipped_repos[:5]),
+                "..." if len(skipped_repos) > 5 else "",
+            )
+            if not errors:
+                errors.append(
+                    f"Skipped {len(skipped_repos)} repository/repositories "
+                    f"(permission errors or processing issues)"
+                )
     else:
-        # Fallback to manual scanning
-        if git_error and git_error != "No git repositories found in configured directories":
-            logger.warning(f"git-status-checker error: {git_error}, using fallback")
-            errors.append(git_error)
-        
-        repos = _find_git_repos(project_dirs)
-        if repos:
-            logger.info(f"Found {len(repos)} repositories via manual scan")
-            skipped_repos = []
-            for repo_path in repos:
-                try:
-                    project = _process_repo(repo_path)
-                    if project:
-                        projects_data.append(project)
-                    else:
-                        logger.debug(f"Skipped processing repository {repo_path} (returned None)")
-                        skipped_repos.append(str(repo_path))
-                except (PermissionError, OSError) as e:
-                    # Permission/authentication errors - skip this repo but continue
-                    logger.warning(f"Skipping repository {repo_path} due to permission/authentication error: {e}")
-                    skipped_repos.append(str(repo_path))
-                except Exception as e:
-                    # Other errors - log but continue processing
-                    logger.warning(f"Error processing repository {repo_path}: {e}")
-                    skipped_repos.append(str(repo_path))
-            
-            if skipped_repos:
-                logger.info(f"Skipped {len(skipped_repos)} repositories: {', '.join(skipped_repos[:5])}{'...' if len(skipped_repos) > 5 else ''}")
-                if len(errors) == 0:
-                    errors.append(f"Skipped {len(skipped_repos)} repository/repositories (permission errors or processing issues)")
-        else:
-            if not projects_data:
-                return [], f"No git repositories found. Checked directories: {', '.join(project_dirs)}"
+        if not projects_data:
+            return [], f"No git repositories found. Checked directories: {', '.join(project_dirs)}"
     
     projects_data.sort(key=lambda x: x['name'].lower())
     logger.info(f"Collected {len(projects_data)} projects from {len(project_dirs)} directories")
