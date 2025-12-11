@@ -1,0 +1,291 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <br/>
+        <h3 class="pb-2 mb-3 border-bottom">Project Monitor</h3>
+        <p class="text-muted mb-3">
+            Monitor git repository freshness, reproducibility health, and filesystem drift across your projects.
+        </p>
+        <div class="mb-3">
+            <button type="button" class="btn btn-sm" id="refreshProjectsBtn" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);">
+                <i class="fas fa-sync-alt me-1"></i>Refresh
+            </button>
+            <span class="ms-3 text-muted">
+                <small>Scanning: {{ project_dirs|join(', ') }}</small>
+            </span>
+        </div>
+    </div>
+</div>
+
+{% if projects %}
+<div class="row mb-4">
+    <div class="col">
+        <div class="alert alert-info">
+            <strong>{{ total_repos }}</strong> git repositories found.
+        </div>
+    </div>
+</div>
+
+{% for project in projects %}
+<div class="row mb-4">
+    <div class="col">
+        <div class="card shadow-sm">
+            <div class="card-header" style="background-color: var(--theme-bg-color);">
+                <h5 class="mb-0">
+                    <i class="fas fa-folder me-2"></i>{{ project.name }}
+                    <small class="text-muted ms-2">({{ project.path }})</small>
+                </h5>
+            </div>
+            <div class="card-body">
+                {# Git Freshness Monitor #}
+                <div class="mb-4">
+                    <h6 class="border-bottom pb-2 mb-3">
+                        <i class="fas fa-code-branch me-2"></i>Git Freshness
+                    </h6>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <table class="table table-sm table-borderless">
+                                <tr>
+                                    <td><strong>Branch:</strong></td>
+                                    <td><code>{{ project.git.branch or 'N/A' }}</code></td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Remote:</strong></td>
+                                    <td>
+                                        {% if project.git.remote %}
+                                            <a href="{{ project.git.remote }}" target="_blank" class="text-decoration-none">
+                                                {{ project.git.remote }}
+                                                <i class="fas fa-external-link-alt ms-1" style="font-size: 0.8em;"></i>
+                                            </a>
+                                        {% else %}
+                                            <span class="text-muted">No remote</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Status:</strong></td>
+                                    <td>
+                                        {% if project.git.dirty %}
+                                            <span class="badge bg-warning text-dark">Dirty</span>
+                                        {% else %}
+                                            <span class="badge bg-success">Clean</span>
+                                        {% endif %}
+                                        {% if project.git.ahead > 0 %}
+                                            <span class="badge bg-info ms-1">{{ project.git.ahead }} ahead</span>
+                                        {% endif %}
+                                        {% if project.git.behind > 0 %}
+                                            <span class="badge bg-danger ms-1">{{ project.git.behind }} behind</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                            </table>
+                        </div>
+                        <div class="col-md-6">
+                            <table class="table table-sm table-borderless">
+                                <tr>
+                                    <td><strong>Last Commit:</strong></td>
+                                    <td>
+                                        {% if project.git.last_commit %}
+                                            <code>{{ project.git.last_commit }}</code>
+                                        {% else %}
+                                            <span class="text-muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Author:</strong></td>
+                                    <td>{{ project.git.last_commit_author or 'N/A' }}</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Date:</strong></td>
+                                    <td>
+                                        {% if project.git.last_commit_date %}
+                                            <small>{{ project.git.last_commit_date }}</small>
+                                        {% else %}
+                                            <span class="text-muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                {# Reproducibility Health #}
+                <div class="mb-4">
+                    <h6 class="border-bottom pb-2 mb-3">
+                        <i class="fas fa-flask me-2"></i>Reproducibility Health
+                    </h6>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6 class="small">Environment Files</h6>
+                            {% if project.reproducibility.environment_files %}
+                                <ul class="list-unstyled small">
+                                    {% for env_file in project.reproducibility.environment_files %}
+                                    <li>
+                                        <i class="fas fa-file-code me-1"></i>
+                                        <code>{{ env_file.name }}</code>
+                                        <small class="text-muted">({{ env_file.modified[:10] }})</small>
+                                    </li>
+                                    {% endfor %}
+                                </ul>
+                            {% else %}
+                                <p class="text-muted small">No environment files detected</p>
+                            {% endif %}
+                        </div>
+                        <div class="col-md-6">
+                            <h6 class="small">Workflow Configs</h6>
+                            {% if project.reproducibility.workflow_configs %}
+                                <ul class="list-unstyled small">
+                                    {% for workflow in project.reproducibility.workflow_configs %}
+                                    <li>
+                                        <i class="fas fa-cogs me-1"></i>
+                                        <code>{{ workflow.name }}</code>
+                                        <small class="text-muted">({{ workflow.modified[:10] }})</small>
+                                    </li>
+                                    {% endfor %}
+                                </ul>
+                            {% else %}
+                                <p class="text-muted small">No workflow configs detected</p>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% if project.reproducibility.missing_common_files %}
+                    <div class="alert alert-warning mt-2 mb-0">
+                        <small><strong>Missing files:</strong> {{ project.reproducibility.missing_common_files|join(', ') }}</small>
+                    </div>
+                    {% endif %}
+                    {% if project.reproducibility.staleness.count > 0 %}
+                    <div class="alert alert-info mt-2 mb-0">
+                        <small>
+                            <strong>Staleness:</strong> {{ project.reproducibility.staleness.count }} file(s) modified after last commit
+                            ({{ project.reproducibility.staleness.last_commit[:10] }})
+                        </small>
+                    </div>
+                    {% endif %}
+                </div>
+
+                {# Drift + Footprint Monitor #}
+                <div>
+                    <h6 class="border-bottom pb-2 mb-3">
+                        <i class="fas fa-chart-line me-2"></i>Drift & Footprint
+                    </h6>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <table class="table table-sm table-borderless">
+                                <tr>
+                                    <td><strong>Directory Size:</strong></td>
+                                    <td>
+                                        {% if project.drift_footprint.directory_size %}
+                                            {{ (project.drift_footprint.directory_size / (1024*1024))|round(2) }} MB
+                                        {% else %}
+                                            <span class="text-muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Git Size:</strong></td>
+                                    <td>
+                                        {% if project.drift_footprint.git_size %}
+                                            {{ (project.drift_footprint.git_size / (1024*1024))|round(2) }} MB
+                                        {% else %}
+                                            <span class="text-muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Last Modified:</strong></td>
+                                    <td>
+                                        {% if project.drift_footprint.last_modified %}
+                                            <small>{{ project.drift_footprint.last_modified[:19] }}</small>
+                                        {% else %}
+                                            <span class="text-muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Last Commit:</strong></td>
+                                    <td>
+                                        {% if project.drift_footprint.last_commit %}
+                                            <small>{{ project.drift_footprint.last_commit[:19] }}</small>
+                                        {% else %}
+                                            <span class="text-muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% if project.drift_footprint.drift_days %}
+                                <tr>
+                                    <td><strong>Drift:</strong></td>
+                                    <td>
+                                        {% if project.drift_footprint.drift_days > 0 %}
+                                            <span class="badge bg-warning text-dark">
+                                                {{ project.drift_footprint.drift_days }} days
+                                            </span>
+                                        {% else %}
+                                            <span class="badge bg-success">Up to date</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endif %}
+                            </table>
+                        </div>
+                        <div class="col-md-6">
+                            <h6 class="small">Large Untracked Files (>1MB)</h6>
+                            {% if project.drift_footprint.large_untracked_files %}
+                                <ul class="list-unstyled small">
+                                    {% for file in project.drift_footprint.large_untracked_files %}
+                                    <li>
+                                        <i class="fas fa-file me-1"></i>
+                                        <code>{{ file.path }}</code>
+                                        <span class="text-muted">({{ file.size_mb }} MB)</span>
+                                    </li>
+                                    {% endfor %}
+                                </ul>
+                            {% else %}
+                                <p class="text-muted small">No large untracked files</p>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endfor %}
+
+{% else %}
+<div class="row mb-4">
+    <div class="col">
+        <div class="alert alert-warning">
+            <i class="fas fa-exclamation-triangle me-2"></i>
+            No git repositories found in configured directories.
+            <br/>
+            <small>Configure project directories in Settings.</small>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<script>
+document.getElementById('refreshProjectsBtn')?.addEventListener('click', function() {
+    const btn = this;
+    const icon = btn.querySelector('i');
+    icon.classList.add('fa-spin');
+    btn.disabled = true;
+    
+    fetch('{{ url_for("projects.projects_status") }}')
+        .then(response => response.json())
+        .then(data => {
+            // Reload page to show updated data
+            window.location.reload();
+        })
+        .catch(error => {
+            console.error('Error refreshing projects:', error);
+            icon.classList.remove('fa-spin');
+            btn.disabled = false;
+        });
+});
+</script>
+{% endblock %}

@@ -3,5 +3,8 @@
     "code_editor_path": "/data/project/worthey_lab/projects/PAH_RHamid",
     "conda_envs_paths": [
         "$HOME/.conda"
+    ],
+    "project_directories": [
+        "/data/project/worthey_lab/projects/PAH_RHamid"
     ]
 }

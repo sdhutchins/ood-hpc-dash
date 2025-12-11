@@ -19,6 +19,7 @@ from blueprints.editor import editor_bp
 from blueprints.envs import envs_bp
 from blueprints.jobs import jobs_bp
 from blueprints.modules import modules_bp, _preload_modules_cache
+from blueprints.projects import projects_bp
 from blueprints.viewer import viewer_bp
 from blueprints.settings import settings_bp
 
@@ -230,6 +231,7 @@ modules_preload_thread.start()
 app.register_blueprint(modules_bp)
 app.register_blueprint(jobs_bp)
 app.register_blueprint(envs_bp)
+app.register_blueprint(projects_bp)
 app.register_blueprint(viewer_bp)
 app.register_blueprint(settings_bp)
 app.register_blueprint(editor_bp)
