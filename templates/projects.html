@@ -191,22 +191,26 @@
             const safeId = Math.abs(pathHash).toString(36).substring(0, 8);
             const detailsId = `details-${safeId}-${index}`;
             
-            const stateBadge = git.dirty ? '<span class="badge bg-warning text-dark">Dirty</span>' :
-                git.ahead || git.behind ? 
-                    `<span class="badge bg-info">Ahead</span>${git.behind ? '<span class="badge bg-danger">Behind</span>' : ''}` :
-                    '<span class="badge bg-success">Clean</span>';
+            const stateBadge = git.dirty 
+                ? '<span class="badge bg-warning text-dark" data-bs-toggle="tooltip" data-bs-placement="top" title="Repository has uncommitted changes">Dirty</span>' 
+                : git.ahead || git.behind 
+                    ? `<span class="badge bg-info" data-bs-toggle="tooltip" data-bs-placement="top" title="Repository has commits ahead of remote">Ahead</span>${git.behind ? '<span class="badge bg-danger" data-bs-toggle="tooltip" data-bs-placement="top" title="Repository is behind remote (needs pull)">Behind</span>' : ''}` 
+                    : '<span class="badge bg-success" data-bs-toggle="tooltip" data-bs-placement="top" title="Repository is clean (no uncommitted changes)">Clean</span>';
             
             const envCount = Array.isArray(repro.environment_files) ? repro.environment_files.length : 0;
             const workflowCount = Array.isArray(repro.workflow_configs) ? repro.workflow_configs.length : 0;
             // Fix: Use sum, not OR
-            const reproInfo = (envCount + workflowCount > 0) ? 
-                `<span><i class="fas fa-file-code"></i> ${envCount} <i class="fas fa-cogs ms-1"></i> ${workflowCount}</span>` : '';
+            const reproInfo = (envCount + workflowCount > 0) 
+                ? `<span data-bs-toggle="tooltip" data-bs-placement="top" title="Environment files: ${envCount}, Workflow configs: ${workflowCount}"><i class="fas fa-file-code"></i> ${envCount} <i class="fas fa-cogs ms-1"></i> ${workflowCount}</span>` 
+                : '';
             
-            const driftBadge = drift.drift_days > 0 ? 
-                `<span class="badge bg-warning text-dark"><i class="fas fa-clock"></i> ${drift.drift_days}d</span>` : '';
+            const driftBadge = drift.drift_days > 0 
+                ? `<span class="badge bg-warning text-dark" data-bs-toggle="tooltip" data-bs-placement="top" title="Files modified ${drift.drift_days} day${drift.drift_days !== 1 ? 's' : ''} after last commit"><i class="fas fa-clock"></i> ${drift.drift_days}d</span>` 
+                : '';
             
-            const sizeInfo = drift.directory_size ? 
-                `<span class="text-muted"><i class="fas fa-hdd"></i> ${(drift.directory_size / (1024*1024)).toFixed(1)} MB</span>` : '';
+            const sizeInfo = drift.directory_size 
+                ? `<span class="text-muted" data-bs-toggle="tooltip" data-bs-placement="top" title="Total directory size"><i class="fas fa-hdd"></i> ${(drift.directory_size / (1024*1024)).toFixed(1)} MB</span>` 
+                : '';
             
             const commitDate = git.last_commit_date ? git.last_commit_date.substring(0, 10) : '';
             
@@ -311,6 +315,22 @@
             collapseElements.forEach(collapseEl => {
                 // Use getOrCreateInstance - no dispose/recreate needed
                 bootstrap.Collapse.getOrCreateInstance(collapseEl, { toggle: false });
+            });
+            
+            // Initialize Bootstrap tooltips for badges and info elements
+            const tooltipElements = container.querySelectorAll('[data-bs-toggle="tooltip"]');
+            tooltipElements.forEach(tooltipEl => {
+                // Dispose existing tooltip if it exists
+                const existingTooltip = bootstrap.Tooltip.getInstance(tooltipEl);
+                if (existingTooltip) {
+                    existingTooltip.dispose();
+                }
+                // Create new tooltip with fast hover
+                new bootstrap.Tooltip(tooltipEl, {
+                    trigger: 'hover',
+                    delay: { show: 100, hide: 0 },
+                    container: 'body'
+                });
             });
         });
     }

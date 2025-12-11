@@ -116,7 +116,7 @@
                                     <td>
                                         {% if module.versions %}
                                             {% for version in module.versions %}
-                                                <button type="button" class="btn btn-sm copy-version me-1 mb-1" data-version="{{ version }}" title="Click to copy: module load {{ version }}" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);">
+                                                <button type="button" class="btn btn-sm copy-version me-1 mb-1" data-version="{{ version }}" data-bs-toggle="tooltip" data-bs-placement="top" title="Click to copy: module load {{ version }}" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);">
                                                     <i class="fa-regular fa-copy me-1"></i><code class="text-reset">{{ version }}</code>
                                                 </button>
                                             {% endfor %}
@@ -275,7 +275,7 @@
                                         const versionsCell = document.createElement('td');
                                         if (module.versions && module.versions.length > 0) {
                                             versionsCell.innerHTML = module.versions.map(v => 
-                                                '<button type="button" class="btn btn-sm copy-version me-1 mb-1" data-version="' + escapeHtml(v) + '" title="Click to copy: module load ' + escapeHtml(v) + '" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);"><i class="fa-regular fa-copy me-1"></i><code class="text-reset">' + escapeHtml(v) + '</code></button>'
+                                                '<button type="button" class="btn btn-sm copy-version me-1 mb-1" data-version="' + escapeHtml(v) + '" data-bs-toggle="tooltip" data-bs-placement="top" title="Click to copy: module load ' + escapeHtml(v) + '" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);"><i class="fa-regular fa-copy me-1"></i><code class="text-reset">' + escapeHtml(v) + '</code></button>'
                                             ).join('');
                                         } else {
                                             versionsCell.innerHTML = '<span class="text-muted">-</span>';
@@ -628,10 +628,30 @@
         function attachCopyHandlers() {
             const buttons = document.querySelectorAll('.copy-version');
             buttons.forEach(btn => {
+                // Skip if already has click handler (check for data attribute)
+                if (btn.dataset.handlerAttached === 'true') return;
+                btn.dataset.handlerAttached = 'true';
+                
+                // Initialize Bootstrap tooltip if not already initialized
+                if (!bootstrap.Tooltip.getInstance(btn)) {
+                    new bootstrap.Tooltip(btn, {
+                        trigger: 'hover',
+                        delay: { show: 100, hide: 0 },
+                        container: 'body'
+                    });
+                }
+                
                 btn.addEventListener('click', () => {
                     const version = btn.getAttribute('data-version');
                     if (!version) return;
                     const originalHtml = btn.innerHTML;
+                    
+                    // Hide tooltip during copy animation
+                    const tooltip = bootstrap.Tooltip.getInstance(btn);
+                    if (tooltip) {
+                        tooltip.hide();
+                    }
+                    
                     copyText(`module load ${version}`)
                         .then(() => {
                             btn.classList.add('btn-success', 'text-white');
@@ -656,6 +676,18 @@
 
         // Initial wiring for server-rendered modules
         attachCopyHandlers();
+        
+        // Initialize tooltips for server-rendered version buttons
+        const serverButtons = document.querySelectorAll('.copy-version[data-bs-toggle="tooltip"]');
+        serverButtons.forEach(btn => {
+            if (!bootstrap.Tooltip.getInstance(btn)) {
+                new bootstrap.Tooltip(btn, {
+                    trigger: 'hover',
+                    delay: { show: 100, hide: 0 },
+                    container: 'body'
+                });
+            }
+        });
         
         // Refresh button handler with streaming
         const refreshBtn = document.getElementById('refreshModulesBtn');
@@ -775,7 +807,7 @@
                                         const versionsCell = document.createElement('td');
                                         if (module.versions && module.versions.length > 0) {
                                             versionsCell.innerHTML = module.versions.map(v => 
-                                                '<button type="button" class="btn btn-sm copy-version me-1 mb-1" data-version="' + escapeHtml(v) + '" title="Click to copy: module load ' + escapeHtml(v) + '" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);"><i class="fa-regular fa-copy me-1"></i><code class="text-reset">' + escapeHtml(v) + '</code></button>'
+                                                '<button type="button" class="btn btn-sm copy-version me-1 mb-1" data-version="' + escapeHtml(v) + '" data-bs-toggle="tooltip" data-bs-placement="top" title="Click to copy: module load ' + escapeHtml(v) + '" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);"><i class="fa-regular fa-copy me-1"></i><code class="text-reset">' + escapeHtml(v) + '</code></button>'
                                             ).join('');
                                         } else {
                                             versionsCell.innerHTML = '<span class="text-muted">-</span>';
