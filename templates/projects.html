@@ -256,11 +256,8 @@
             renderPagination(totalPages);
         }
         
-        // Re-initialize Bootstrap collapse for new elements
-        const collapseElements = container.querySelectorAll('.collapse');
-        collapseElements.forEach(collapseEl => {
-            new bootstrap.Collapse(collapseEl, { toggle: false });
-        });
+        // Bootstrap 5 automatically initializes collapse from data-bs-toggle attributes
+        // No manual initialization needed - it will cause conflicts if we do it manually
     }
     
     function renderPagination(totalPages) {
