@@ -143,10 +143,11 @@
                 hide(loading);
                 fetchController = null;
                 if (err.name === 'AbortError') {
-                    if (errorText) errorText.textContent = 'Request timed out. Please try again.';
-                } else {
-                    if (errorText) errorText.textContent = 'Error loading projects: ' + err.message;
+                    // Abort is expected when user clicks refresh or timeout occurs
+                    // Don't show error or log - the new request will handle it
+                    return;
                 }
+                if (errorText) errorText.textContent = 'Error loading projects: ' + err.message;
                 show(error);
                 console.error('Error loading projects:', err);
             });
@@ -169,7 +170,8 @@
                     </div>
                 </div>
             </div>
-            <div id="projectsList">`;
+            <div id="projectsAccordion">
+                <div id="projectsList">`;
         
         pageProjects.forEach((project, idx) => {
             const index = start + idx;
@@ -177,9 +179,17 @@
             const repro = project.reproducibility || {};
             const drift = project.drift_footprint || {};
             
-            // Use project name + index for stable IDs
-            const safeName = escapeHtml(project.name || 'project').replace(/[^a-zA-Z0-9-_]/g, '-');
-            const detailsId = `details-${safeName}-${index}`;
+            // Use project path for stable, unique IDs (path is unique per project)
+            // Hash the path to create a short, stable identifier that doesn't change with pagination
+            const pathStr = String(project.path || project.name || 'project');
+            let pathHash = 0;
+            for (let i = 0; i < pathStr.length; i++) {
+                const char = pathStr.charCodeAt(i);
+                pathHash = ((pathHash << 5) - pathHash) + char;
+                pathHash = pathHash | 0; // Convert to 32-bit integer
+            }
+            const safeId = Math.abs(pathHash).toString(36).substring(0, 8);
+            const detailsId = `details-${safeId}-${index}`;
             
             const stateBadge = git.dirty ? '<span class="badge bg-warning text-dark">Dirty</span>' :
                 git.ahead || git.behind ? 
@@ -248,7 +258,7 @@
                         <i class="fas fa-chevron-down"></i>
                     </button>
                 </div>
-                <div class="collapse mt-2 pt-2 border-top" id="${detailsId}">
+                <div class="collapse mt-2 pt-2 border-top" id="${detailsId}" data-bs-parent="#projectsAccordion">
                     <div class="row small">
                         <div class="col-md-4">
                             <strong>Git:</strong>
@@ -280,7 +290,7 @@
 </div>`;
         });
         
-        html += `</div>`;
+        html += `</div></div>`; // Close projectsList and projectsAccordion
         
         if (totalPages > 1) {
             html += `<div id="projectsPagination"></div>`;
@@ -294,6 +304,8 @@
         
         // Initialize Bootstrap collapse for dynamically added elements
         // Use getOrCreateInstance to avoid dispose/recreate issues
+        // Note: This runs on every pagination render, but since innerHTML recreates DOM nodes,
+        // each element gets exactly one instance. This is harmless and ensures proper initialization.
         requestAnimationFrame(() => {
             const collapseElements = container.querySelectorAll('.collapse');
             collapseElements.forEach(collapseEl => {
@@ -371,6 +383,10 @@
     }
     
     function escapeHtml(text) {
+        // Handle non-string input safely
+        if (typeof text !== 'string') {
+            text = String(text ?? '');
+        }
         if (!text) return '';
         const div = document.createElement('div');
         div.textContent = text;
