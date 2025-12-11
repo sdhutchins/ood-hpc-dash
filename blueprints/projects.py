@@ -987,7 +987,20 @@ def projects_status():
         
         # Ensure all data is JSON-serializable
         try:
-            from utils import CustomJsonEncoder
+            # Try to import CustomJsonEncoder, fallback to inline definition
+            try:
+                from utils import CustomJsonEncoder
+            except ImportError:
+                # Define inline if import fails (e.g., server hasn't reloaded)
+                class CustomJsonEncoder(json.JSONEncoder):
+                    """Custom JSON encoder to handle Path and datetime objects."""
+                    def default(self, obj):
+                        if isinstance(obj, Path):
+                            return str(obj)
+                        if isinstance(obj, datetime):
+                            return obj.isoformat()
+                        return json.JSONEncoder.default(self, obj)
+            
             from flask import Response
             
             response_data = {
