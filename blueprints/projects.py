@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import shutil
 import subprocess
 import time
 from datetime import datetime
@@ -47,7 +48,6 @@ def _find_git_status_checker() -> Optional[str]:
     ]
     
     # Check PATH first
-    import shutil
     git_checker = shutil.which('git-status-checker')
     if git_checker:
         return git_checker
@@ -65,7 +65,7 @@ def _call_git_status_checker(
     ignore_untracked: bool = True,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
-    Call git-status-checker and return JSON output.
+    Call git-status-checker with --json flag and return parsed JSON output.
     
     Args:
         base_dirs: List of base directories to scan
@@ -89,8 +89,8 @@ def _call_git_status_checker(
     if not expanded_dirs:
         return None, "No valid project directories found in configuration"
     
-    # Build command
-    cmd = [git_checker, '--recursive', '--check-fetch']
+    # Build command with --json flag
+    cmd = [git_checker, '--json', '--recursive', '--check-fetch']
     if ignore_untracked:
         cmd.append('--ignore-untracked')
     
@@ -105,25 +105,26 @@ def _call_git_status_checker(
             timeout=120,  # 2 minutes timeout for scanning
             env=os.environ.copy(),
             cwd=Path.cwd(),
+            check=False,  # Don't raise on non-zero exit
         )
         
-        if result.returncode != 0:
-            error_msg = result.stderr if result.stderr else f"Exit code: {result.returncode}"
-            return None, f"git-status-checker failed: {error_msg}"
+        # git-status-checker returns exit code 1 if repos are outdated, 0 if all up-to-date
+        # Exit code 127 means no git repos found
+        if result.returncode == 127:
+            return None, "No git repositories found in configured directories"
         
-        # git-status-checker outputs to stdout, but we need JSON
-        # Check if there's a way to get JSON output
-        # For now, parse the text output and structure it
-        # TODO: Check if git-status-checker supports JSON output flag
-        
-        # Parse the text output
+        # Parse JSON output
         output = result.stdout.strip()
         if not output:
-            return {}, None
+            # Empty output might mean no repos found or all up-to-date
+            return {"repositories": [], "total": 0, "outdated": 0}, None
         
-        # For now, return empty dict - we'll need to parse the text output
-        # or check if git-status-checker has JSON support
-        return None, "git-status-checker JSON output not yet implemented - parsing text output"
+        try:
+            data = json.loads(output)
+            return data, None
+        except json.JSONDecodeError as e:
+            error_msg = result.stderr if result.stderr else f"Failed to parse JSON: {e}"
+            return None, f"git-status-checker JSON parse error: {error_msg}"
         
     except subprocess.TimeoutExpired:
         return None, "git-status-checker timed out after 120 seconds"
@@ -131,27 +132,106 @@ def _call_git_status_checker(
         return None, f"Error calling git-status-checker: {str(e)}"
 
 
-def _get_git_info(repo_path: Path) -> Dict[str, Any]:
+def _get_git_info_from_status_checker(
+    repo_status: Dict[str, Any],
+    repo_path: Path,
+) -> Dict[str, Any]:
     """
-    Get git information for a repository using git commands directly.
+    Convert git-status-checker status to our git_info format.
     
     Args:
+        repo_status: Repository status dict from git-status-checker JSON
         repo_path: Path to git repository
     
     Returns:
         Dictionary with git status information
     """
     git_info = {
-        'path': str(repo_path),
+        'path': repo_status.get('path', str(repo_path)),
         'name': repo_path.name,
-        'dirty': False,
-        'ahead': 0,
-        'behind': 0,
+        'dirty': len(repo_status.get('local_changes', [])) > 0,
+        'ahead': repo_status.get('ahead', False),
+        'behind': repo_status.get('behind', False),
         'last_commit': None,
         'last_commit_author': None,
         'last_commit_date': None,
         'branch': None,
         'remote': None,
+        'up_to_date': repo_status.get('up_to_date', True),
+        'has_remote_changes': repo_status.get('has_remote_changes', False),
+        'local_changes': repo_status.get('local_changes', []),
+    }
+    
+    # Get additional info using git commands (branch, last commit, remote)
+    try:
+        # Get current branch
+        result = subprocess.run(
+            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            git_info['branch'] = result.stdout.strip()
+        
+        # Get last commit info
+        result = subprocess.run(
+            ['git', 'log', '-1', '--format=%H|%an|%ae|%ad|%s', '--date=iso'],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            parts = result.stdout.strip().split('|', 4)
+            if len(parts) >= 4:
+                git_info['last_commit'] = parts[0][:8]  # Short hash
+                git_info['last_commit_author'] = parts[1]
+                git_info['last_commit_date'] = parts[3]
+        
+        # Get remote URL
+        result = subprocess.run(
+            ['git', 'remote', 'get-url', 'origin'],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            git_info['remote'] = result.stdout.strip()
+        
+    except Exception as e:
+        logger.warning(f"Error getting additional git info for {repo_path}: {e}")
+    
+    return git_info
+
+
+def _get_git_info_fallback(repo_path: Path) -> Optional[Dict[str, Any]]:
+    """
+    Fallback function to get git info using direct git commands.
+    Used when git-status-checker is not available.
+    
+    Args:
+        repo_path: Path to git repository
+    
+    Returns:
+        Dictionary with git status information or None
+    """
+    git_info = {
+        'path': str(repo_path),
+        'name': repo_path.name,
+        'dirty': False,
+        'ahead': False,
+        'behind': False,
+        'last_commit': None,
+        'last_commit_author': None,
+        'last_commit_date': None,
+        'branch': None,
+        'remote': None,
+        'up_to_date': True,
+        'has_remote_changes': False,
+        'local_changes': [],
     }
     
     try:
@@ -180,7 +260,10 @@ def _get_git_info(repo_path: Path) -> Dict[str, Any]:
             timeout=10,
         )
         if result.returncode == 0:
-            git_info['dirty'] = len(result.stdout.strip()) > 0
+            changes = result.stdout.strip().split('\n')
+            changes = [c for c in changes if c.strip()]
+            git_info['dirty'] = len(changes) > 0
+            git_info['local_changes'] = changes
         
         # Get last commit info
         result = subprocess.run(
@@ -221,8 +304,9 @@ def _get_git_info(repo_path: Path) -> Dict[str, Any]:
                 if result.returncode == 0 and result.stdout.strip():
                     parts = result.stdout.strip().split()
                     if len(parts) == 2:
-                        git_info['behind'] = int(parts[0])
-                        git_info['ahead'] = int(parts[1])
+                        git_info['behind'] = int(parts[0]) > 0
+                        git_info['ahead'] = int(parts[1]) > 0
+                        git_info['up_to_date'] = int(parts[0]) == 0 and int(parts[1]) == 0 and not git_info['dirty']
             except (ValueError, subprocess.TimeoutExpired):
                 # If remote branch doesn't exist or other error, just continue
                 pass
@@ -520,26 +604,51 @@ def projects():
     settings = _load_settings()
     project_dirs = settings.get(PROJECT_DIRS_CONFIG_KEY, [])
     
-    # Find all git repositories
-    repos = _find_git_repos(project_dirs)
+    # Get git status from git-status-checker
+    git_status_data, error = _call_git_status_checker(project_dirs)
     
-    # Collect information for each repository
-    projects_data = []
-    for repo_path in repos:
-        git_info = _get_git_info(repo_path)
-        if not git_info:
-            continue
+    if error:
+        logger.warning(f"Error calling git-status-checker: {error}")
+        # Fall back to manual scanning if git-status-checker fails
+        repos = _find_git_repos(project_dirs)
+        projects_data = []
+        for repo_path in repos:
+            # Use fallback _get_git_info if needed (keeping old implementation)
+            git_info = _get_git_info_fallback(repo_path)
+            if not git_info:
+                continue
+            
+            repro_health = _check_reproducibility_health(repo_path)
+            drift_footprint = _check_drift_and_footprint(repo_path)
+            
+            projects_data.append({
+                'name': git_info['name'],
+                'path': git_info['path'],
+                'git': git_info,
+                'reproducibility': repro_health,
+                'drift_footprint': drift_footprint,
+            })
+    else:
+        # Use git-status-checker JSON data
+        repositories = git_status_data.get('repositories', [])
+        projects_data = []
         
-        repro_health = _check_reproducibility_health(repo_path)
-        drift_footprint = _check_drift_and_footprint(repo_path)
-        
-        projects_data.append({
-            'name': git_info['name'],
-            'path': git_info['path'],
-            'git': git_info,
-            'reproducibility': repro_health,
-            'drift_footprint': drift_footprint,
-        })
+        for repo_status in repositories:
+            repo_path = Path(repo_status.get('path', ''))
+            if not repo_path.exists():
+                continue
+            
+            git_info = _get_git_info_from_status_checker(repo_status, repo_path)
+            repro_health = _check_reproducibility_health(repo_path)
+            drift_footprint = _check_drift_and_footprint(repo_path)
+            
+            projects_data.append({
+                'name': git_info['name'],
+                'path': git_info['path'],
+                'git': git_info,
+                'reproducibility': repro_health,
+                'drift_footprint': drift_footprint,
+            })
     
     # Sort by name
     projects_data.sort(key=lambda x: x['name'].lower())
@@ -549,6 +658,7 @@ def projects():
         projects=projects_data,
         project_dirs=project_dirs,
         total_repos=len(projects_data),
+        git_status_error=error if error else None,
     )
 
 
@@ -563,24 +673,50 @@ def projects_status():
     settings = _load_settings()
     project_dirs = settings.get(PROJECT_DIRS_CONFIG_KEY, [])
     
-    repos = _find_git_repos(project_dirs)
+    # Get git status from git-status-checker
+    git_status_data, error = _call_git_status_checker(project_dirs)
     
-    projects_data = []
-    for repo_path in repos:
-        git_info = _get_git_info(repo_path)
-        if not git_info:
-            continue
+    if error:
+        logger.warning(f"Error calling git-status-checker: {error}")
+        # Fall back to manual scanning if git-status-checker fails
+        repos = _find_git_repos(project_dirs)
+        projects_data = []
+        for repo_path in repos:
+            git_info = _get_git_info_fallback(repo_path)
+            if not git_info:
+                continue
+            
+            repro_health = _check_reproducibility_health(repo_path)
+            drift_footprint = _check_drift_and_footprint(repo_path)
+            
+            projects_data.append({
+                'name': git_info['name'],
+                'path': git_info['path'],
+                'git': git_info,
+                'reproducibility': repro_health,
+                'drift_footprint': drift_footprint,
+            })
+    else:
+        # Use git-status-checker JSON data
+        repositories = git_status_data.get('repositories', [])
+        projects_data = []
         
-        repro_health = _check_reproducibility_health(repo_path)
-        drift_footprint = _check_drift_and_footprint(repo_path)
-        
-        projects_data.append({
-            'name': git_info['name'],
-            'path': git_info['path'],
-            'git': git_info,
-            'reproducibility': repro_health,
-            'drift_footprint': drift_footprint,
-        })
+        for repo_status in repositories:
+            repo_path = Path(repo_status.get('path', ''))
+            if not repo_path.exists():
+                continue
+            
+            git_info = _get_git_info_from_status_checker(repo_status, repo_path)
+            repro_health = _check_reproducibility_health(repo_path)
+            drift_footprint = _check_drift_and_footprint(repo_path)
+            
+            projects_data.append({
+                'name': git_info['name'],
+                'path': git_info['path'],
+                'git': git_info,
+                'reproducibility': repro_health,
+                'drift_footprint': drift_footprint,
+            })
     
     return jsonify({
         'projects': projects_data,
