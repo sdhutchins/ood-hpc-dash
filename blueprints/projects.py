@@ -4,37 +4,20 @@ import logging
 import os
 import shutil
 import subprocess
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # Third-party imports
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, render_template
+
+# Local imports
+from utils import expand_path, find_binary, load_settings
 
 projects_bp = Blueprint('projects', __name__, url_prefix='/projects')
 logger = logging.getLogger(__name__.capitalize())
 
-CONFIG_FILE = Path('config/settings.json')
 PROJECT_DIRS_CONFIG_KEY = 'project_directories'
-
-
-def _load_settings() -> Dict[str, Any]:
-    """Load settings from JSON file with sensible defaults."""
-    defaults = {
-        PROJECT_DIRS_CONFIG_KEY: [
-            "$HOME/Documents/Git-Repos",
-            "$HOME/Dev/src-repos",
-        ],
-    }
-    try:
-        if CONFIG_FILE.exists():
-            with CONFIG_FILE.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-            return {**defaults, **data}
-    except Exception:
-        return defaults
-    return defaults
 
 
 def _find_git_status_checker() -> Optional[str]:
@@ -86,7 +69,7 @@ def _call_git_status_checker(
     # Expand user paths and environment variables
     expanded_dirs = []
     for dir_path in base_dirs:
-        expanded = os.path.expandvars(os.path.expanduser(dir_path))
+        expanded = expand_path(dir_path)
         expanded_path = Path(expanded)
         logger.info(f"Checking directory: {dir_path} -> {expanded_path} (exists: {expanded_path.exists()})")
         if expanded_path.exists():
@@ -712,7 +695,7 @@ def projects():
     Data is loaded asynchronously via JavaScript to avoid timeouts.
     """
     logger.info("Projects page accessed")
-    settings = _load_settings()
+    settings = load_settings()
     project_dirs = settings.get(PROJECT_DIRS_CONFIG_KEY, [])
     logger.info(f"Loaded project directories from settings: {project_dirs}")
     
@@ -747,7 +730,7 @@ def projects_status():
     Returns:
         JSON response with project monitoring data
     """
-    settings = _load_settings()
+    settings = load_settings()
     project_dirs = settings.get(PROJECT_DIRS_CONFIG_KEY, [])
     
     if not project_dirs:

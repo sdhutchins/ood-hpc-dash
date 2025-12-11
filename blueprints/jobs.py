@@ -12,6 +12,9 @@ from typing import Any, Dict, List, Optional, Tuple
 # Third-party imports
 from flask import Blueprint, jsonify, render_template, request
 
+# Local imports
+from utils import find_binary
+
 jobs_bp = Blueprint('jobs', __name__, url_prefix='/jobs')
 logger = logging.getLogger(__name__.capitalize())
 
@@ -46,12 +49,6 @@ SEFF_PATHS = [
 ]
 
 
-def _find_binary(paths: List[str]) -> Optional[str]:
-    """Find first existing binary from list of absolute paths."""
-    for path in paths:
-        if os.path.exists(path) and os.access(path, os.X_OK):
-            return path
-    return None
 
 
 def _call_sinfo() -> Tuple[Optional[str], Optional[str]]:
@@ -61,7 +58,7 @@ def _call_sinfo() -> Tuple[Optional[str], Optional[str]]:
     Returns:
         Tuple of (output, error_message)
     """
-    sinfo_path = _find_binary(SINFO_PATHS)
+    sinfo_path = find_binary(SINFO_PATHS)
     if not sinfo_path:
         return None, "sinfo binary not found in standard locations"
     
@@ -93,7 +90,7 @@ def _call_squeue(user: Optional[str] = None) -> Tuple[Optional[str], Optional[st
     Returns:
         Tuple of (output, error_message)
     """
-    squeue_path = _find_binary(SQUEUE_PATHS)
+    squeue_path = find_binary(SQUEUE_PATHS)
     if not squeue_path:
         return None, "squeue binary not found in standard locations"
     
@@ -129,7 +126,7 @@ def _call_seff(job_id: str) -> Tuple[Optional[str], Optional[str]]:
     Returns:
         Tuple of (output, error_message)
     """
-    seff_path = _find_binary(SEFF_PATHS)
+    seff_path = find_binary(SEFF_PATHS)
     if not seff_path:
         return None, "seff binary not found in standard locations"
     
@@ -162,7 +159,7 @@ def _call_sacct(user: Optional[str] = None, max_jobs: int = 100) -> Tuple[Option
     Returns:
         Tuple of (output, error_message)
     """
-    sacct_path = _find_binary(SACCT_PATHS)
+    sacct_path = find_binary(SACCT_PATHS)
     if not sacct_path:
         return None, "sacct binary not found in standard locations"
     

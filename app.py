@@ -21,7 +21,8 @@ from blueprints.jobs import jobs_bp
 from blueprints.modules import modules_bp, _preload_modules_cache
 from blueprints.projects import projects_bp
 from blueprints.viewer import viewer_bp
-from blueprints.settings import settings_bp, _load_settings as load_app_settings
+from blueprints.settings import settings_bp
+from utils import load_settings
 
 # Configure the app
 app = Flask(__name__)
@@ -29,7 +30,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
 
 # Load settings on startup (used for one-time config like flaskcode path)
-settings_data = load_app_settings()
+settings_data = load_settings()
 
 # Configure FlaskCode using settings
 app.config.from_object(flaskcode.default_config)
@@ -61,99 +62,66 @@ root_logger.addHandler(stream_handler)
 logger = logging.getLogger(__name__.capitalize())
 logger.info("Application initialized - logging configured")
 
-# Update modules list in background thread (non-blocking)
+def _run_background_script(script_name: str, output_file: Path, max_age: int, timeout: int = 30) -> None:
+    """Run a background script and log results.
+    
+    Args:
+        script_name: Name of script in scripts/ directory
+        output_file: Path to expected output file
+        max_age: Maximum age in seconds before updating
+        timeout: Subprocess timeout in seconds
+    """
+    script_path = Path('scripts') / script_name
+    if not script_path.exists():
+        return
+    
+    # Check file age
+    if output_file.exists():
+        file_age = time.time() - output_file.stat().st_mtime
+        if file_age < max_age:
+            logger.info(f"{script_name} output is recent, skipping update")
+            return
+    
+    try:
+        logger.info(f"Running {script_name} in background...")
+        result = subprocess.run(
+            ['bash', '-l', str(script_path)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=Path.cwd()
+        )
+        
+        if result.returncode == 0:
+            if output_file.exists():
+                file_size = output_file.stat().st_size
+                logger.info(f"{script_name} completed (output: {file_size} bytes)")
+                if file_size == 0:
+                    logger.warning(f"{script_name} output is empty")
+                    if result.stdout:
+                        logger.warning(f"stdout: {result.stdout[:200]}")
+                    if result.stderr:
+                        logger.warning(f"stderr: {result.stderr[:200]}")
+            else:
+                logger.warning(f"{script_name} output file not created")
+        else:
+            logger.warning(f"{script_name} failed (exit {result.returncode})")
+            if result.stderr:
+                logger.warning(f"stderr: {result.stderr[:200]}")
+    except subprocess.TimeoutExpired:
+        logger.warning(f"{script_name} timed out after {timeout}s")
+    except Exception as e:
+        logger.warning(f"Error running {script_name}: {e}")
+
+
 def update_modules_background():
     """Update modules list in background thread."""
-    scripts_dir = Path('scripts')
-    update_script = scripts_dir / 'update_modules.sh'
-    modules_file = Path('logs/modules.txt')
-    
-    # Only update if file doesn't exist or is older than 1 hour
-    if modules_file.exists():
-        file_age = time.time() - modules_file.stat().st_mtime
-        if file_age < 3600:  # 1 hour
-            logger.info("Modules file is recent, skipping update")
-            return
-    
-    if update_script.exists():
-        try:
-            logger.info("Updating modules list in background...")
-            # Use bash -l to run as login shell (sources .bashrc, etc.)
-            result = subprocess.run(
-                ['bash', '-l', str(update_script)],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                cwd=Path.cwd()  # Ensure we're in the right directory
-            )
-            if result.returncode == 0:
-                # Check if file was actually created and has content
-                if modules_file.exists():
-                    file_size = modules_file.stat().st_size
-                    logger.info(f"Modules list updated successfully (file size: {file_size} bytes)")
-                    if file_size == 0:
-                        logger.warning("Modules file is empty - checking script output")
-                        if result.stdout:
-                            logger.warning(f"Script stdout: {result.stdout}")
-                        if result.stderr:
-                            logger.warning(f"Script stderr: {result.stderr}")
-                else:
-                    logger.warning("Modules file was not created")
-            else:
-                logger.warning(f"Modules update failed (exit code {result.returncode})")
-                if result.stderr:
-                    logger.warning(f"Script stderr: {result.stderr}")
-                if result.stdout:
-                    logger.warning(f"Script stdout: {result.stdout}")
-        except Exception as e:
-            logger.warning(f"Could not update modules: {e}")
+    _run_background_script('update_modules.sh', Path('logs/modules.txt'), max_age=3600, timeout=120)
 
-# Update partitions list in background thread (non-blocking)
+
 def update_partitions_background():
-    """Update partitions list by running update_partitions.sh in background thread."""
-    scripts_dir = Path('scripts')
-    update_script = scripts_dir / 'update_partitions.sh'
-    partitions_file = Path('logs/partitions.txt')
-    
-    # Only update if file doesn't exist or is older than 5 minutes
-    if partitions_file.exists():
-        file_age = time.time() - partitions_file.stat().st_mtime
-        if file_age < 300:  # 5 minutes
-            logger.info("Partitions file is recent, skipping update")
-            return
-    
-    if update_script.exists():
-        try:
-            logger.info("Updating partitions list in background...")
-            # Use bash -l to run as login shell (sources .bashrc, etc.)
-            result = subprocess.run(
-                ['bash', '-l', str(update_script)],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                cwd=Path.cwd()
-            )
-            if result.returncode == 0:
-                # Check if file was actually created and has content
-                if partitions_file.exists():
-                    file_size = partitions_file.stat().st_size
-                    logger.info(f"Partitions list updated successfully (file size: {file_size} bytes)")
-                    if file_size == 0:
-                        logger.warning("Partitions file is empty - checking script output")
-                        if result.stdout:
-                            logger.warning(f"Script stdout: {result.stdout}")
-                        if result.stderr:
-                            logger.warning(f"Script stderr: {result.stderr}")
-                else:
-                    logger.warning("Partitions file was not created")
-            else:
-                logger.warning(f"Partitions update failed (exit code {result.returncode})")
-                if result.stderr:
-                    logger.warning(f"Script stderr: {result.stderr}")
-                if result.stdout:
-                    logger.warning(f"Script stdout: {result.stdout}")
-        except Exception as e:
-            logger.warning(f"Could not update partitions: {e}")
+    """Update partitions list in background thread."""
+    _run_background_script('update_partitions.sh', Path('logs/partitions.txt'), max_age=300)
 
 # Start background threads
 modules_thread = threading.Thread(target=update_modules_background, daemon=True)
@@ -162,42 +130,15 @@ modules_thread.start()
 partitions_thread = threading.Thread(target=update_partitions_background, daemon=True)
 partitions_thread.start()
 
-# Update disk quota in background thread (non-blocking)
 def update_disk_quota_background(force=False):
-    """Update disk quota by running get_disk_quota.sh in background thread."""
-    scripts_dir = Path('scripts')
-    update_script = scripts_dir / 'get_disk_quota.sh'
+    """Update disk quota in background thread."""
     quota_file = Path('logs/disk_quota.txt')
-    
-    # Always update on startup if forced, otherwise check age
     if not force and quota_file.exists():
         file_age = time.time() - quota_file.stat().st_mtime
-        if file_age < 300:  # 5 minutes (reduced from 1 hour for faster updates)
+        if file_age < 300:
             logger.info("Disk quota file is recent, skipping update")
             return
-    
-    if update_script.exists():
-        try:
-            logger.info("Updating disk quota in background...")
-            result = subprocess.run(
-                ['bash', '-l', str(update_script)],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                cwd=Path.cwd()
-            )
-            if result.returncode == 0:
-                if quota_file.exists():
-                    file_size = quota_file.stat().st_size
-                    logger.info(f"Disk quota updated successfully (file size: {file_size} bytes)")
-                else:
-                    logger.warning("Disk quota file was not created")
-            else:
-                logger.warning(f"Disk quota update failed (exit code {result.returncode})")
-                if result.stderr:
-                    logger.warning(f"Script stderr: {result.stderr}")
-        except Exception as e:
-            logger.warning(f"Could not update disk quota: {e}")
+    _run_background_script('get_disk_quota.sh', quota_file, max_age=300)
 
 # Run disk quota update immediately on startup (non-blocking)
 quota_thread = threading.Thread(target=lambda: update_disk_quota_background(force=True), daemon=True)
@@ -221,7 +162,7 @@ app.register_blueprint(editor_bp)
 @app.context_processor
 def inject_navbar_color():
     """Make navbar_color available to all templates (reload each request)."""
-    current = load_app_settings()
+    current = load_settings()
     navbar_color = current.get("navbar_color", settings_data.get("navbar_color", "#ede7f6"))
     return {"navbar_color": navbar_color}
 

@@ -1,28 +1,11 @@
-import json
-import os
 from pathlib import Path
 
 from flask import Blueprint, render_template
 
+# Local imports
+from utils import expand_path, load_settings
+
 envs_bp = Blueprint('envs', __name__, url_prefix='/envs')
-
-SETTINGS_FILE = Path("config/settings.json")
-
-
-def _load_settings() -> dict:
-    defaults = {
-        "conda_envs_paths": [
-            "$HOME/.conda",
-        ],
-    }
-    try:
-        if SETTINGS_FILE.exists():
-            with SETTINGS_FILE.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-            return {**defaults, **data}
-    except Exception:
-        return defaults
-    return defaults
 
 
 def _find_environments_file(conda_paths: list[str]) -> tuple[Path | None, str | None]:
@@ -33,7 +16,7 @@ def _find_environments_file(conda_paths: list[str]) -> tuple[Path | None, str | 
     Returns (path_or_none, warning_or_none).
     """
     for raw in conda_paths:
-        candidate_base = os.path.expandvars(os.path.expanduser(raw))
+        candidate_base = expand_path(raw)
         if candidate_base.lower().endswith("environments.txt"):
             candidate = Path(candidate_base)
             if candidate.exists():
@@ -46,7 +29,7 @@ def _find_environments_file(conda_paths: list[str]) -> tuple[Path | None, str | 
 
 
 def _load_envs_from_conda_list():
-    settings = _load_settings()
+    settings = load_settings()
     conda_paths = settings.get("conda_envs_paths", ["$HOME/.conda"])
     env_file, warning = _find_environments_file(conda_paths)
     if not env_file:

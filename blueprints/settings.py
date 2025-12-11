@@ -1,20 +1,18 @@
 # Standard library imports
-import json
 import logging
 import os
-from pathlib import Path
 
 # Third-party imports
 from flask import Blueprint, flash, redirect, render_template, request, url_for
+
+# Local imports
+from utils import load_settings, save_settings
 
 # Blueprint for the settings page
 settings_bp = Blueprint('settings', __name__, url_prefix='/settings')
 
 # Logger for the settings blueprint
 logger = logging.getLogger(__name__)
-
-# Path to settings file
-SETTINGS_FILE = Path('config/settings.json')
 
 # Whitelisted light navbar colors (value, label)
 ALLOWED_NAV_COLORS = [
@@ -32,86 +30,15 @@ def _get_default_settings():
     Returns:
         dict: Default settings
     """
-    return {
-        'navbar_color': '#ede7f6',
-        'code_editor_path': str(Path.cwd()),
-        'conda_envs_paths': [
-            '$HOME/.conda/envs'
-        ],
-        'project_directories': [
-            '$HOME/Documents/Git-Repos',
-            '$HOME/Dev/src-repos'
-        ]
-    }
-
-
-def _load_settings():
-    """Load settings from JSON file, creating it with defaults if it doesn't exist.
-    
-    Returns:
-        dict: Settings dictionary, merged with defaults
-    """
-    defaults = _get_default_settings()
-    
-    try:
-        if not SETTINGS_FILE.exists():
-            # Create settings file with defaults
-            _save_settings(defaults)
-            return defaults
-        
-        with SETTINGS_FILE.open('r', encoding='utf-8') as f:
-            settings = json.load(f)
-        
-        # Merge with defaults to ensure all keys exist
-        return {**defaults, **settings}
-    except Exception as e:
-        logger.error(f"Error loading settings: {e}", exc_info=True)
-        # Return defaults on error
-        return defaults
-
-
-def _save_settings(settings):
-    """Save settings to JSON file.
-    
-    Args:
-        settings: Dictionary of settings to save
-        
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    try:
-        # Ensure config directory exists
-        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        
-        with SETTINGS_FILE.open('w', encoding='utf-8') as f:
-            json.dump(settings, f, indent=4, ensure_ascii=False)
-        
-        logger.info("Settings saved successfully")
-        return True
-    except Exception as e:
-        logger.error(f"Error saving settings: {e}", exc_info=True)
-        return False
-
-
-def _expand_path(path):
-    """Expand environment variables in path (e.g., $HOME).
-    
-    Args:
-        path: Path string that may contain environment variables
-        
-    Returns:
-        str: Expanded path
-    """
-    return os.path.expanduser(os.path.expandvars(path))
+    return load_settings()
 
 
 @settings_bp.route('/')
 def settings():
     """Render the settings page with current settings."""
-    current_settings = _load_settings()
     return render_template(
         'settings.html',
-        settings=current_settings,
+        settings=load_settings(),
         allowed_nav_colors=ALLOWED_NAV_COLORS,
         username=os.environ.get("USER")
     )
@@ -153,12 +80,12 @@ def save_settings():
         new_settings = {
             'navbar_color': navbar_color,
             'code_editor_path': code_editor_path,
-            'conda_envs_paths': conda_envs_paths if conda_envs_paths else defaults['conda_envs_paths'],
-            'project_directories': project_directories if project_directories else defaults['project_directories']
+            'conda_envs_paths': conda_envs_paths or defaults['conda_envs_paths'],
+            'project_directories': project_directories or defaults['project_directories']
         }
         
         # Save settings
-        if _save_settings(new_settings):
+        if save_settings(new_settings):
             flash('Settings saved successfully! Note: Some changes may require app restart.', 'success')
         else:
             flash('Error saving settings. Please try again.', 'error')

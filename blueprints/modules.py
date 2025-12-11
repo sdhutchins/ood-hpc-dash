@@ -10,10 +10,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import threading
 
 # Third-party imports
 from flask import Blueprint, jsonify, render_template, Response
-import threading
+
+# Local imports
+from utils import find_binary
 
 # Blueprint for the modules page
 modules_bp = Blueprint('modules', __name__, url_prefix='/modules')
@@ -40,14 +43,6 @@ BASH_PATHS = [
 ]
 
 
-def _find_binary(paths: List[str]) -> Optional[str]:
-    """Find first existing binary from list of absolute paths."""
-    for path in paths:
-        if os.path.exists(path) and os.access(path, os.X_OK):
-            return path
-    return None
-
-
 def _call_module_command(command: str, timeout: int = 30) -> Tuple[Optional[str], Optional[str]]:
     """
     Call a module command using bash -lc with explicit environment.
@@ -61,7 +56,7 @@ def _call_module_command(command: str, timeout: int = 30) -> Tuple[Optional[str]
     Returns:
         Tuple of (output, error_message)
     """
-    bash_path = _find_binary(BASH_PATHS)
+    bash_path = find_binary(BASH_PATHS)
     if not bash_path:
         return None, "bash binary not found in standard locations"
     
