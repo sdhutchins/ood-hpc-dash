@@ -136,15 +136,17 @@ def _call_sacct(user: Optional[str] = None, max_jobs: int = 100) -> Tuple[Option
     
     # Format: JobID,JobName,State,Partition,Start,End,Elapsed,TotalCPU,ReqCPUS,MaxRSS,AllocCPUS,CPUTime
     # Note: CPUUtilization is not available in all SLURM versions, so we calculate it from TotalCPU
+    # Note: sacct doesn't have a -n option to limit results, so we limit in Python after parsing
+    # Use --allocations to show only job-level entries (not individual steps)
     cmd = [
         sacct_path,
         '--format=JobID,JobName,State,Partition,Start,End,Elapsed,TotalCPU,ReqCPUS,MaxRSS,AllocCPUS,CPUTime',
         '--parsable2',
         '--noheader',
         '--units=M',  # Memory in MB
+        '--allocations',  # Only show job allocations, not steps
         '-u', user,
         '--starttime', start_date,  # Last 30 days
-        '-n', str(max_jobs),  # Limit total jobs retrieved
     ]
     
     try:
