@@ -222,7 +222,7 @@
                                 </span>
                             {% endif %}
                             {% if project.drift_footprint.drift_days is not none and project.drift_footprint.drift_days > 0 %}
-                                <span class="badge bg-warning text-dark" data-bs-toggle="tooltip" title="Filesystem drift: {{ project.drift_footprint.drift_days }} days since last commit (files modified after commit)"><i class="fas fa-clock"></i> {{ project.drift_footprint.drift_days }}d</span>
+                                <span class="badge bg-warning text-dark" data-bs-toggle="tooltip" title="Files modified {{ project.drift_footprint.drift_days }} days after last commit (uncommitted changes detected)"><i class="fas fa-clock"></i> {{ project.drift_footprint.drift_days }}d</span>
                             {% endif %}
                             {% if project.drift_footprint.directory_size %}
                                 <span class="text-muted" data-bs-toggle="tooltip" title="Total directory size (excluding .git)"><i class="fas fa-hdd"></i> {{ (project.drift_footprint.directory_size / 1048576)|round(1) }} MB</span>
@@ -498,7 +498,7 @@ function generateProjectHTML(project, index) {
         `<span data-bs-toggle="tooltip" title="Environment files: ${envCount}, Workflow configs: ${workflowCount}"><i class="fas fa-file-code"></i> ${envCount} <i class="fas fa-cogs ms-1"></i> ${workflowCount}</span>` : '';
     
     const driftBadge = drift.drift_days > 0 ? 
-        `<span class="badge bg-warning text-dark" data-bs-toggle="tooltip" title="Filesystem drift: ${drift.drift_days} days since last commit (files modified after commit)"><i class="fas fa-clock"></i> ${drift.drift_days}d</span>` : '';
+        `<span class="badge bg-warning text-dark" data-bs-toggle="tooltip" title="Files modified ${drift.drift_days} days after last commit (uncommitted changes detected)"><i class="fas fa-clock"></i> ${drift.drift_days}d</span>` : '';
     
     const sizeInfo = drift.directory_size ? 
         `<span class="text-muted" data-bs-toggle="tooltip" title="Total directory size (excluding .git)"><i class="fas fa-hdd"></i> ${(drift.directory_size / (1024*1024)).toFixed(1)} MB</span>` : '';

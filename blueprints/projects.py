@@ -605,10 +605,39 @@ def _check_drift_and_footprint(repo_path: Path) -> Dict[str, Any]:
             last_commit_time = int(result.stdout.strip())
             info['last_commit'] = datetime.fromtimestamp(last_commit_time).isoformat()
             
-            # Calculate drift
-            if last_modified > 0:
-                drift_seconds = last_modified - last_commit_time
-                info['drift_days'] = round(drift_seconds / 86400, 1)
+            # Calculate drift - only show if there are actual uncommitted changes
+            # Check for modified tracked files or untracked files created after last commit
+            drift_days = None
+            
+            # Check git status for uncommitted changes
+            status_result = subprocess.run(
+                ['git', 'status', '--porcelain'],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            
+            has_uncommitted = False
+            if status_result.returncode == 0 and status_result.stdout.strip():
+                # Has uncommitted changes
+                has_uncommitted = True
+                # Calculate drift based on most recent modification of changed files
+                if last_modified > 0 and last_modified > last_commit_time:
+                    drift_seconds = last_modified - last_commit_time
+                    drift_days = round(drift_seconds / 86400, 1)
+            else:
+                # No uncommitted changes - check if any files were modified after commit
+                # This could happen if files were touched but changes were discarded
+                # Only show drift if files were modified significantly after commit (more than 1 day)
+                if last_modified > 0 and last_modified > last_commit_time:
+                    drift_seconds = last_modified - last_commit_time
+                    drift_days_calc = drift_seconds / 86400
+                    # Only show drift if it's more than 1 day (to avoid false positives from file system operations)
+                    if drift_days_calc > 1.0:
+                        drift_days = round(drift_days_calc, 1)
+            
+            info['drift_days'] = drift_days
         
         # Find large untracked files (> 1MB)
         result = subprocess.run(
