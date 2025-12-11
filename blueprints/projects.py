@@ -730,20 +730,41 @@ def projects_status():
     Returns:
         JSON response with project monitoring data
     """
-    settings = load_settings()
-    project_dirs = settings.get(PROJECT_DIRS_CONFIG_KEY, [])
-    
-    if not project_dirs:
+    try:
+        settings = load_settings()
+        project_dirs = settings.get(PROJECT_DIRS_CONFIG_KEY, [])
+        
+        if not project_dirs:
+            return jsonify({
+                'projects': [],
+                'total': 0,
+                'error': 'No project directories configured',
+            }), 200
+        
+        projects_data, error = _collect_projects_data(project_dirs)
+        
+        # Ensure all data is JSON-serializable
+        try:
+            response_data = {
+                'projects': projects_data,
+                'total': len(projects_data),
+                'error': error,
+            }
+            # Test serialization
+            json.dumps(response_data)
+        except (TypeError, ValueError) as json_err:
+            logger.error(f"JSON serialization error: {json_err}", exc_info=True)
+            return jsonify({
+                'projects': [],
+                'total': 0,
+                'error': f'Data serialization error: {str(json_err)}',
+            }), 500
+        
+        return jsonify(response_data), 200
+    except Exception as e:
+        logger.error(f"Error in projects_status endpoint: {e}", exc_info=True)
         return jsonify({
             'projects': [],
             'total': 0,
-            'error': 'No project directories configured',
-        })
-    
-    projects_data, error = _collect_projects_data(project_dirs)
-    
-    return jsonify({
-        'projects': projects_data,
-        'total': len(projects_data),
-        'error': error,
-    })
+            'error': f'Error loading projects: {str(e)}',
+        }), 500

@@ -316,7 +316,16 @@ function loadProjectsData() {
     
     const url = el('projectsPageData')?.dataset.statusUrl || '/projects/status';
     fetch(url)
-        .then(r => r.json())
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                throw new Error('Response is not JSON');
+            }
+            return response.json();
+        })
         .then(data => {
             hide(loading);
             if (data.error) {
@@ -335,6 +344,7 @@ function loadProjectsData() {
             hide(loading);
             if (errorText) errorText.textContent = 'Error loading projects: ' + err.message;
             show(error);
+            console.error('Error loading projects:', err);
         });
 }
 
