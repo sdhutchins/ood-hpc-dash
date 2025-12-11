@@ -17,7 +17,7 @@
           {% if meta.icon %}
             <i class="fa-solid {{ meta.icon }} me-2"></i>
           {% endif %}
-          {{ meta.title or cat }}
+          {{ meta.title|default(cat) }}
         </h5>
       </div>
       <div class="card-body p-0">

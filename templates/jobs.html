@@ -131,7 +131,7 @@
                                 <td><code>{{ job.partition }}</code></td>
                                 <td>
                                     {% if job.start and job.start != 'N/A' %}
-                                        <small>{{ job.start[:10] if job.start|length > 10 else job.start }}</small>
+                                        <small>{{ job.start|truncate(10, end='') }}</small>
                                     {% else %}
                                         <small class="text-muted">N/A</small>
                                     {% endif %}

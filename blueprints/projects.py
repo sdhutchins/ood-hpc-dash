@@ -115,7 +115,7 @@ def _call_git_status_checker(
             cmd,
             capture_output=True,
             text=True,
-            timeout=120,  # 2 minutes timeout for scanning
+            timeout=300,  # 5 minutes timeout for scanning large directories
             env=os.environ.copy(),
             cwd=Path.cwd(),
             check=False,  # Don't raise on non-zero exit
@@ -156,8 +156,8 @@ def _call_git_status_checker(
             return None, f"git-status-checker JSON parse error: {error_msg}"
         
     except subprocess.TimeoutExpired:
-        logger.error("git-status-checker timed out after 120 seconds")
-        return None, "git-status-checker timed out after 120 seconds"
+        logger.error("git-status-checker timed out after 300 seconds")
+        return None, "git-status-checker timed out after 5 minutes. Try scanning smaller directories or use fallback mode."
     except Exception as e:
         logger.error(f"Exception calling git-status-checker: {e}", exc_info=True)
         return None, f"Error calling git-status-checker: {str(e)}"
@@ -642,12 +642,75 @@ def _check_drift_and_footprint(repo_path: Path) -> Dict[str, Any]:
     
     return info
 
+def _process_repo(repo_path: Path, repo_status: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """
+    Process a single repository and return project data.
+    
+    Args:
+        repo_path: Path to git repository
+        repo_status: Optional status dict from git-status-checker
+    
+    Returns:
+        Project data dict or None if processing fails
+    """
+    if not repo_path.exists():
+        logger.warning(f"Repository path does not exist: {repo_path}")
+        return None
+    
+    git_info = (_get_git_info_from_status_checker(repo_status, repo_path) 
+                if repo_status else _get_git_info_fallback(repo_path))
+    
+    if not git_info:
+        return None
+    
+    return {
+        'name': git_info['name'],
+        'path': git_info['path'],
+        'git': git_info,
+        'reproducibility': _check_reproducibility_health(repo_path),
+        'drift_footprint': _check_drift_and_footprint(repo_path),
+    }
 
+
+def _collect_projects_data(project_dirs: List[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """
+    Collect project data from git-status-checker or fallback.
+    
+    Args:
+        project_dirs: List of project directories to scan
+    
+    Returns:
+        Tuple of (projects_data_list, error_message)
+    """
+    git_status_data, git_error = _call_git_status_checker(project_dirs)
+    repositories = git_status_data.get('repositories', []) if git_status_data else []
+    
+    # Use fallback if git-status-checker failed or found no repos
+    if git_error or not repositories:
+        if git_error and git_error != "No git repositories found in configured directories":
+            logger.warning(f"git-status-checker error: {git_error}, using fallback")
+        
+        repos = _find_git_repos(project_dirs)
+        if not repos:
+            return [], f"No git repositories found. Checked directories: {', '.join(project_dirs)}"
+        
+        projects_data = [p for p in (_process_repo(r) for r in repos) if p]
+    else:
+        projects_data = [p for p in (_process_repo(Path(r.get('path', '')), r) 
+                                     for r in repositories) if p]
+    
+    projects_data.sort(key=lambda x: x['name'].lower())
+    logger.info(f"Collected {len(projects_data)} projects")
+    
+    return projects_data, git_error if git_error and not projects_data else None
 
 
 @projects_bp.route('/')
 def projects():
-    """Render the projects page with monitoring information."""
+    """
+    Render the projects page immediately.
+    Data is loaded asynchronously via JavaScript to avoid timeouts.
+    """
     logger.info("Projects page accessed")
     settings = _load_settings()
     project_dirs = settings.get(PROJECT_DIRS_CONFIG_KEY, [])
@@ -661,97 +724,17 @@ def projects():
             project_dirs=[],
             total_repos=0,
             git_status_error="No project directories configured. Please configure them in Settings.",
+            loading=False,
         )
     
-    # Get git status from git-status-checker
-    git_status_data, error = _call_git_status_checker(project_dirs)
-    
-    projects_data = []
-    use_fallback = False
-    
-    # Determine if we should use git-status-checker results or fallback
-    if error:
-        logger.warning(f"git-status-checker error: {error}, using fallback")
-        use_fallback = True
-    elif not git_status_data:
-        logger.info("git-status-checker returned no data, using fallback")
-        use_fallback = True
-    else:
-        repositories = git_status_data.get('repositories', [])
-        if not repositories:
-            logger.info("git-status-checker found no repositories, using fallback to verify")
-            use_fallback = True
-        else:
-            logger.info(f"Using git-status-checker results: {len(repositories)} repositories")
-    
-    if use_fallback:
-        # Fall back to manual scanning
-        repos = _find_git_repos(project_dirs)
-        logger.info(f"Found {len(repos)} repositories via manual scan")
-        
-        if not repos:
-            logger.warning("No git repositories found in any configured directory")
-            return render_template(
-                'projects.html',
-                projects=[],
-                project_dirs=project_dirs,
-                total_repos=0,
-                git_status_error=f"No git repositories found. Checked directories: {', '.join(project_dirs)}",
-            )
-        
-        for repo_path in repos:
-            logger.debug(f"Processing repository: {repo_path}")
-            git_info = _get_git_info_fallback(repo_path)
-            if not git_info:
-                logger.warning(f"Could not get git info for {repo_path}")
-                continue
-            
-            repro_health = _check_reproducibility_health(repo_path)
-            drift_footprint = _check_drift_and_footprint(repo_path)
-            
-            projects_data.append({
-                'name': git_info['name'],
-                'path': git_info['path'],
-                'git': git_info,
-                'reproducibility': repro_health,
-                'drift_footprint': drift_footprint,
-            })
-    else:
-        # Use git-status-checker JSON data
-        repositories = git_status_data.get('repositories', [])
-        logger.info(f"Processing {len(repositories)} repositories from git-status-checker")
-        
-        for repo_status in repositories:
-            repo_path_str = repo_status.get('path', '')
-            repo_path = Path(repo_path_str)
-            logger.debug(f"Processing repository from git-status-checker: {repo_path}")
-            
-            if not repo_path.exists():
-                logger.warning(f"Repository path does not exist: {repo_path}")
-                continue
-            
-            git_info = _get_git_info_from_status_checker(repo_status, repo_path)
-            repro_health = _check_reproducibility_health(repo_path)
-            drift_footprint = _check_drift_and_footprint(repo_path)
-            
-            projects_data.append({
-                'name': git_info['name'],
-                'path': git_info['path'],
-                'git': git_info,
-                'reproducibility': repro_health,
-                'drift_footprint': drift_footprint,
-            })
-    
-    # Sort by name
-    projects_data.sort(key=lambda x: x['name'].lower())
-    logger.info(f"Returning {len(projects_data)} projects to template")
-    
+    # Return page immediately - data will be loaded via JavaScript
     return render_template(
         'projects.html',
-        projects=projects_data,
+        projects=[],
         project_dirs=project_dirs,
-        total_repos=len(projects_data),
-        git_status_error=error if error else None,
+        total_repos=0,
+        git_status_error=None,
+        loading=True,
     )
 
 
@@ -759,6 +742,7 @@ def projects():
 def projects_status():
     """
     Return JSON with project status information.
+    This endpoint is called asynchronously by the frontend.
     
     Returns:
         JSON response with project monitoring data
@@ -766,52 +750,17 @@ def projects_status():
     settings = _load_settings()
     project_dirs = settings.get(PROJECT_DIRS_CONFIG_KEY, [])
     
-    # Get git status from git-status-checker
-    git_status_data, error = _call_git_status_checker(project_dirs)
+    if not project_dirs:
+        return jsonify({
+            'projects': [],
+            'total': 0,
+            'error': 'No project directories configured',
+        })
     
-    if error:
-        logger.warning(f"Error calling git-status-checker: {error}")
-        # Fall back to manual scanning if git-status-checker fails
-        repos = _find_git_repos(project_dirs)
-        projects_data = []
-        for repo_path in repos:
-            git_info = _get_git_info_fallback(repo_path)
-            if not git_info:
-                continue
-            
-            repro_health = _check_reproducibility_health(repo_path)
-            drift_footprint = _check_drift_and_footprint(repo_path)
-            
-            projects_data.append({
-                'name': git_info['name'],
-                'path': git_info['path'],
-                'git': git_info,
-                'reproducibility': repro_health,
-                'drift_footprint': drift_footprint,
-            })
-    else:
-        # Use git-status-checker JSON data
-        repositories = git_status_data.get('repositories', [])
-        projects_data = []
-        
-        for repo_status in repositories:
-            repo_path = Path(repo_status.get('path', ''))
-            if not repo_path.exists():
-                continue
-            
-            git_info = _get_git_info_from_status_checker(repo_status, repo_path)
-            repro_health = _check_reproducibility_health(repo_path)
-            drift_footprint = _check_drift_and_footprint(repo_path)
-            
-            projects_data.append({
-                'name': git_info['name'],
-                'path': git_info['path'],
-                'git': git_info,
-                'reproducibility': repro_health,
-                'drift_footprint': drift_footprint,
-            })
+    projects_data, error = _collect_projects_data(project_dirs)
     
     return jsonify({
         'projects': projects_data,
         'total': len(projects_data),
+        'error': error,
     })
