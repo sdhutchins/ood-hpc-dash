@@ -32,6 +32,7 @@ while IFS= read -r family; do
         [ "$in_desc" = true ] && desc="${desc} ${line}"
     done <<< "$output"
     desc=$(echo "$desc" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')
+    echo "Generated description for $family" >&2
     echo "\"$family\": \"$desc\""
 done < /tmp/families.txt > /tmp/descriptions.txt
 
