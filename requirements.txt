@@ -3,3 +3,4 @@
 #  version_sensitive_depenency==1.2.3
 flask
 git+https://github.com/sdhutchins/flaskcode.git@dev
+git+https://github.com/sdhutchins/git-status-checker.git@main

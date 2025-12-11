@@ -38,6 +38,12 @@ SACCT_PATHS = [
     '/opt/slurm/bin/sacct',
     '/usr/local/bin/sacct',
 ]
+SEFF_PATHS = [
+    '/cm/shared/apps/slurm/18.08.9/bin/seff',
+    '/usr/bin/seff',
+    '/opt/slurm/bin/seff',
+    '/usr/local/bin/seff',
+]
 
 
 def _find_binary(paths: List[str]) -> Optional[str]:
@@ -111,6 +117,38 @@ def _call_squeue(user: Optional[str] = None) -> Tuple[Optional[str], Optional[st
         return None, "squeue command timed out"
     except Exception as e:
         return None, f"Error calling squeue: {str(e)}"
+
+
+def _call_seff(job_id: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Call seff to get detailed job efficiency report.
+    
+    Args:
+        job_id: Job ID to get efficiency report for
+    
+    Returns:
+        Tuple of (output, error_message)
+    """
+    seff_path = _find_binary(SEFF_PATHS)
+    if not seff_path:
+        return None, "seff binary not found in standard locations"
+    
+    try:
+        result = subprocess.run(
+            [seff_path, job_id],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={'PATH': '/usr/bin:/bin'},
+            cwd=Path.cwd(),
+        )
+        if result.returncode == 0:
+            return result.stdout, None
+        return None, f"seff failed: {result.stderr}"
+    except subprocess.TimeoutExpired:
+        return None, "seff command timed out"
+    except Exception as e:
+        return None, f"Error calling seff: {str(e)}"
 
 
 def _call_sacct(user: Optional[str] = None, max_jobs: int = 100) -> Tuple[Optional[str], Optional[str]]:
@@ -724,3 +762,57 @@ def jobs_history():
         'per_page': per_page,
         'total_pages': (total + per_page - 1) // per_page,
     })
+
+
+@jobs_bp.route('/efficiency/<job_id>')
+def job_efficiency(job_id: str):
+    """
+    Return JSON with seff efficiency report for a specific job.
+    
+    Args:
+        job_id: Job ID to get efficiency report for
+    
+    Returns:
+        JSON response with seff output
+    """
+    output, error = _call_seff(job_id)
+    if error:
+        return jsonify({'error': error}), 500
+    
+    if not output:
+        return jsonify({'error': 'No output from seff'}), 500
+    
+    # Parse seff output into structured data
+    seff_data = {
+        'raw_output': output,
+        'parsed': {}
+    }
+    
+    # Try to parse key metrics from seff output
+    lines = output.split('\n')
+    for line in lines:
+        line = line.strip()
+        if ':' in line:
+            key, value = line.split(':', 1)
+            key = key.strip()
+            value = value.strip()
+            
+            # Extract key metrics
+            if 'CPU Efficiency' in key:
+                seff_data['parsed']['cpu_efficiency'] = value
+            elif 'Memory Efficiency' in key:
+                seff_data['parsed']['memory_efficiency'] = value
+            elif 'CPU Utilized' in key:
+                seff_data['parsed']['cpu_utilized'] = value
+            elif 'Memory Utilized' in key:
+                seff_data['parsed']['memory_utilized'] = value
+            elif 'Job Wall-clock time' in key:
+                seff_data['parsed']['wall_clock_time'] = value
+            elif 'State' in key:
+                seff_data['parsed']['state'] = value
+            elif 'Nodes' in key and 'parsed' not in seff_data.get('parsed', {}).get('nodes', ''):
+                seff_data['parsed']['nodes'] = value
+            elif 'Cores per node' in key:
+                seff_data['parsed']['cores_per_node'] = value
+    
+    return jsonify(seff_data)
