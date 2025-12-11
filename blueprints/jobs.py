@@ -134,10 +134,11 @@ def _call_sacct(user: Optional[str] = None, max_jobs: int = 100) -> Tuple[Option
     # Calculate date 30 days ago in YYYY-MM-DD format
     start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
     
-    # Format: JobID,JobName,State,Partition,Start,End,Elapsed,TotalCPU,ReqCPUS,MaxRSS,AllocCPUS,CPUTime,CPUUtilization
+    # Format: JobID,JobName,State,Partition,Start,End,Elapsed,TotalCPU,ReqCPUS,MaxRSS,AllocCPUS,CPUTime
+    # Note: CPUUtilization is not available in all SLURM versions, so we calculate it from TotalCPU
     cmd = [
         sacct_path,
-        '--format=JobID,JobName,State,Partition,Start,End,Elapsed,TotalCPU,ReqCPUS,MaxRSS,AllocCPUS,CPUTime,CPUUtilization',
+        '--format=JobID,JobName,State,Partition,Start,End,Elapsed,TotalCPU,ReqCPUS,MaxRSS,AllocCPUS,CPUTime',
         '--parsable2',
         '--noheader',
         '--units=M',  # Memory in MB
@@ -412,7 +413,7 @@ def _parse_sacct_output(output: str) -> List[Dict[str, Any]]:
         
         # Parsable2 format uses | as delimiter
         parts = line.split('|')
-        if len(parts) < 13:
+        if len(parts) < 12:
             continue
         
         job_id = parts[0]
@@ -427,21 +428,15 @@ def _parse_sacct_output(output: str) -> List[Dict[str, Any]]:
         max_rss = parts[9] if len(parts) > 9 else '0M'
         alloc_cpus = parts[10] if len(parts) > 10 else '0'
         cpu_time = parts[11] if len(parts) > 11 else '00:00:00'
-        cpu_util = parts[12] if len(parts) > 12 else '0.00'
         
-        # Calculate CPU efficiency: (CPUUtilization / 100) or (TotalCPU / (Elapsed * AllocCPUS))
+        # Calculate CPU efficiency from TotalCPU / (Elapsed * AllocCPUS)
         cpu_efficiency = 0.0
         try:
-            cpu_util_float = float(cpu_util) if cpu_util and cpu_util != 'N/A' else 0.0
-            if cpu_util_float > 0:
-                cpu_efficiency = cpu_util_float
-            else:
-                # Fallback: calculate from TotalCPU / (Elapsed * AllocCPUS)
-                elapsed_sec = _parse_time_to_seconds(elapsed)
-                alloc_cpus_int = int(alloc_cpus) if alloc_cpus and alloc_cpus.isdigit() else 1
-                total_cpu_sec = _parse_time_to_seconds(total_cpu)
-                if elapsed_sec > 0 and alloc_cpus_int > 0:
-                    cpu_efficiency = (total_cpu_sec / (elapsed_sec * alloc_cpus_int)) * 100
+            elapsed_sec = _parse_time_to_seconds(elapsed)
+            alloc_cpus_int = int(alloc_cpus) if alloc_cpus and alloc_cpus.isdigit() else 1
+            total_cpu_sec = _parse_time_to_seconds(total_cpu)
+            if elapsed_sec > 0 and alloc_cpus_int > 0:
+                cpu_efficiency = (total_cpu_sec / (elapsed_sec * alloc_cpus_int)) * 100
         except (ValueError, ZeroDivisionError):
             cpu_efficiency = 0.0
         
