@@ -21,26 +21,7 @@ from blueprints.jobs import jobs_bp
 from blueprints.modules import modules_bp, _preload_modules_cache
 from blueprints.projects import projects_bp
 from blueprints.viewer import viewer_bp
-from blueprints.settings import settings_bp
-
-SETTINGS_FILE = Path("config/settings.json")
-
-
-def _load_settings() -> dict:
-    """Load settings from JSON file with sensible defaults."""
-    defaults = {
-        "navbar_color": "#ede7f6",
-        "code_editor_path": str(Path.cwd()),
-        "conda_envs_paths": ["$HOME/.conda/envs"],
-    }
-    try:
-        if SETTINGS_FILE.exists():
-            with SETTINGS_FILE.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-            return {**defaults, **data}
-    except Exception:
-        return defaults
-    return defaults
+from blueprints.settings import settings_bp, _load_settings as load_app_settings
 
 # Configure the app
 app = Flask(__name__)
@@ -48,7 +29,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
 
 # Load settings on startup (used for one-time config like flaskcode path)
-settings_data = _load_settings()
+settings_data = load_app_settings()
 
 # Configure FlaskCode using settings
 app.config.from_object(flaskcode.default_config)
@@ -240,8 +221,8 @@ app.register_blueprint(editor_bp)
 @app.context_processor
 def inject_navbar_color():
     """Make navbar_color available to all templates (reload each request)."""
-    current = _load_settings()
-    navbar_color = current.get("navbar_color", settings_data.get("navbar_color", "#e3f2fd"))
+    current = load_app_settings()
+    navbar_color = current.get("navbar_color", settings_data.get("navbar_color", "#ede7f6"))
     return {"navbar_color": navbar_color}
 
 def _strip_ansi_codes(text: str) -> str:

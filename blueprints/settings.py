@@ -26,46 +26,48 @@ ALLOWED_NAV_COLORS = [
 ]
 
 
-def _load_settings():
-    """Load settings from JSON file.
+def _get_default_settings():
+    """Get default settings dictionary.
     
     Returns:
-        dict: Settings dictionary with default values if file doesn't exist
+        dict: Default settings
     """
+    return {
+        'navbar_color': '#ede7f6',
+        'code_editor_path': str(Path.cwd()),
+        'conda_envs_paths': [
+            '$HOME/.conda/envs'
+        ],
+        'project_directories': [
+            '$HOME/Documents/Git-Repos',
+            '$HOME/Dev/src-repos'
+        ]
+    }
+
+
+def _load_settings():
+    """Load settings from JSON file, creating it with defaults if it doesn't exist.
+    
+    Returns:
+        dict: Settings dictionary, merged with defaults
+    """
+    defaults = _get_default_settings()
+    
     try:
         if not SETTINGS_FILE.exists():
-            # Return defaults if file doesn't exist
-            return {
-                'navbar_color': '#ede7f6',
-                'code_editor_path': str(Path.cwd()),
-                'conda_envs_paths': [
-                    '$HOME/.conda/envs'
-                ],
-                'project_directories': [
-                    '$HOME/Documents/Git-Repos',
-                    '$HOME/Dev/src-repos'
-                ]
-            }
+            # Create settings file with defaults
+            _save_settings(defaults)
+            return defaults
         
         with SETTINGS_FILE.open('r', encoding='utf-8') as f:
             settings = json.load(f)
         
-        return settings
+        # Merge with defaults to ensure all keys exist
+        return {**defaults, **settings}
     except Exception as e:
         logger.error(f"Error loading settings: {e}", exc_info=True)
         # Return defaults on error
-        return {
-            'navbar_color': '#ede7f6',
-            'code_editor_path': str(Path.cwd()),
-            'conda_envs_paths': [
-                '$HOME/.conda/envs',
-                '$HOME/miniconda3/envs'
-            ],
-            'project_directories': [
-                '$HOME/Documents/Git-Repos',
-                '$HOME/Dev/src-repos'
-            ]
-        }
+        return defaults
 
 
 def _save_settings(settings):
@@ -144,17 +146,15 @@ def save_settings():
         if navbar_color not in allowed_values:
             navbar_color = ALLOWED_NAV_COLORS[0][0]
         
-        # Build settings dictionary
+        # Get defaults for fallback
+        defaults = _get_default_settings()
+        
+        # Build settings dictionary, using defaults if empty
         new_settings = {
             'navbar_color': navbar_color,
             'code_editor_path': code_editor_path,
-            'conda_envs_paths': conda_envs_paths if conda_envs_paths else [
-                '$HOME/.conda/'
-            ],
-            'project_directories': project_directories if project_directories else [
-                '$HOME/Documents/Git-Repos',
-                '$HOME/Dev/src-repos'
-            ]
+            'conda_envs_paths': conda_envs_paths if conda_envs_paths else defaults['conda_envs_paths'],
+            'project_directories': project_directories if project_directories else defaults['project_directories']
         }
         
         # Save settings
