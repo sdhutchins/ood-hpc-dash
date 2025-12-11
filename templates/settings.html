@@ -45,6 +45,16 @@
     </div>
   </div>
 
+  <div class="card mb-4 shadow-sm" style="border-radius: 10px;">
+    <div class="card-body">
+      <label for="project_directories" class="form-label fw-semibold">Project Directories</label>
+      <textarea class="form-control mb-2" id="project_directories" name="project_directories" rows="3"
+                placeholder="$HOME/Documents/Git-Repos&#10;$HOME/Dev/src-repos">{% if settings.project_directories %}{% for p in settings.project_directories %}{{ p }}
+{% endfor %}{% endif %}</textarea>
+      <div class="form-text">One path per line. Base directories to scan for git repositories. Environment variables like $HOME are allowed.</div>
+    </div>
+  </div>
+
   <button type="submit" class="btn px-4 py-2" style="border-radius: 6px; background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);">Save</button>
 
 </form>

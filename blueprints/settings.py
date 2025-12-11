@@ -40,6 +40,10 @@ def _load_settings():
                 'code_editor_path': str(Path.cwd()),
                 'conda_envs_paths': [
                     '$HOME/.conda/envs'
+                ],
+                'project_directories': [
+                    '$HOME/Documents/Git-Repos',
+                    '$HOME/Dev/src-repos'
                 ]
             }
         
@@ -56,6 +60,10 @@ def _load_settings():
             'conda_envs_paths': [
                 '$HOME/.conda/envs',
                 '$HOME/miniconda3/envs'
+            ],
+            'project_directories': [
+                '$HOME/Documents/Git-Repos',
+                '$HOME/Dev/src-repos'
             ]
         }
 
@@ -123,6 +131,14 @@ def save_settings():
             if path.strip()
         ]
         
+        # Get project directories (can be multiple, separated by newlines)
+        project_directories_text = request.form.get('project_directories', '').strip()
+        project_directories = [
+            path.strip() 
+            for path in project_directories_text.split('\n') 
+            if path.strip()
+        ]
+        
         # Validate navbar color against allowed list
         allowed_values = {c[0] for c in ALLOWED_NAV_COLORS}
         if navbar_color not in allowed_values:
@@ -134,6 +150,10 @@ def save_settings():
             'code_editor_path': code_editor_path,
             'conda_envs_paths': conda_envs_paths if conda_envs_paths else [
                 '$HOME/.conda/'
+            ],
+            'project_directories': project_directories if project_directories else [
+                '$HOME/Documents/Git-Repos',
+                '$HOME/Dev/src-repos'
             ]
         }
         
