@@ -94,20 +94,23 @@ def _call_git_status_checker(
     logger.debug(f"Running command: {' '.join(cmd)}")
     
     try:
+        logger.info(f"Running git-status-checker with timeout=600s for {len(expanded_dirs)} directories")
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,  # 5 minutes timeout for scanning large directories
+            timeout=600,  # 10 minutes timeout for scanning multiple large directories
             env=os.environ.copy(),
             cwd=Path.cwd(),
             check=False,  # Don't raise on non-zero exit
         )
         
         logger.info(f"git-status-checker exit code: {result.returncode}")
-        logger.debug(f"git-status-checker stdout: {result.stdout[:500]}")  # First 500 chars
+        if result.stdout:
+            logger.debug(f"git-status-checker stdout length: {len(result.stdout)} chars")
+            logger.debug(f"git-status-checker stdout preview: {result.stdout[:500]}")
         if result.stderr:
-            logger.debug(f"git-status-checker stderr: {result.stderr[:500]}")
+            logger.warning(f"git-status-checker stderr: {result.stderr[:1000]}")
         
         # git-status-checker returns:
         # - exit code 0: all repos up-to-date
@@ -139,8 +142,8 @@ def _call_git_status_checker(
             return None, f"git-status-checker JSON parse error: {error_msg}"
         
     except subprocess.TimeoutExpired:
-        logger.error("git-status-checker timed out after 300 seconds")
-        return None, "git-status-checker timed out after 5 minutes. Try scanning smaller directories or use fallback mode."
+        logger.error("git-status-checker timed out after 600 seconds")
+        return None, "git-status-checker timed out after 10 minutes. Using fallback mode to scan directories individually."
     except Exception as e:
         logger.error(f"Exception calling git-status-checker: {e}", exc_info=True)
         return None, f"Error calling git-status-checker: {str(e)}"
@@ -346,35 +349,43 @@ def _find_git_repos(base_dirs: List[str]) -> List[Path]:
     logger.info(f"Scanning for git repositories in: {base_dirs}")
     
     for base_dir in base_dirs:
-        expanded = os.path.expandvars(os.path.expanduser(base_dir))
-        base_path = Path(expanded)
-        logger.info(f"Checking base directory: {base_dir} -> {base_path} (exists: {base_path.exists()})")
-        
-        if not base_path.exists():
-            logger.warning(f"Base directory does not exist: {base_path}")
-            continue
-        
-        # Check if the base directory itself is a git repo
-        if (base_path / '.git').exists():
-            logger.info(f"Found git repo at base directory: {base_path}")
-            repos.append(base_path)
-            continue
-        
-        # Walk directory tree looking for .git directories
-        repo_count_before = len(repos)
-        for root, dirs, files in os.walk(base_path):
-            # Skip hidden directories (except .git)
-            dirs[:] = [d for d in dirs if not d.startswith('.') or d == '.git']
+        try:
+            expanded = expand_path(base_dir)
+            base_path = Path(expanded)
+            logger.info(f"Checking base directory: {base_dir} -> {base_path} (exists: {base_path.exists()})")
             
-            if '.git' in dirs:
-                repo_path = Path(root)
-                logger.debug(f"Found git repository: {repo_path}")
-                repos.append(repo_path)
-                # Don't recurse into subdirectories of a git repo
-                dirs.remove('.git')
-                dirs.clear()  # Stop recursion
-        
-        logger.info(f"Found {len(repos) - repo_count_before} repositories in {base_path}")
+            if not base_path.exists():
+                logger.warning(f"Base directory does not exist: {base_path}")
+                continue
+            
+            # Check if the base directory itself is a git repo
+            if (base_path / '.git').exists():
+                logger.info(f"Found git repo at base directory: {base_path}")
+                repos.append(base_path)
+                continue
+            
+            # Walk directory tree looking for .git directories
+            repo_count_before = len(repos)
+            try:
+                for root, dirs, files in os.walk(base_path):
+                    # Skip hidden directories (except .git)
+                    dirs[:] = [d for d in dirs if not d.startswith('.') or d == '.git']
+                    
+                    if '.git' in dirs:
+                        repo_path = Path(root)
+                        logger.debug(f"Found git repository: {repo_path}")
+                        repos.append(repo_path)
+                        # Don't recurse into subdirectories of a git repo
+                        dirs.remove('.git')
+                        dirs.clear()  # Stop recursion
+                
+                logger.info(f"Found {len(repos) - repo_count_before} repositories in {base_path}")
+            except (PermissionError, OSError) as e:
+                logger.warning(f"Error scanning directory {base_path}: {e}")
+                continue
+        except Exception as e:
+            logger.error(f"Error processing directory {base_dir}: {e}", exc_info=True)
+            continue
     
     logger.info(f"Total repositories found: {len(repos)}")
     return repos
@@ -665,27 +676,61 @@ def _collect_projects_data(project_dirs: List[str]) -> Tuple[List[Dict[str, Any]
     Returns:
         Tuple of (projects_data_list, error_message)
     """
+    projects_data = []
+    errors = []
+    
+    # Try git-status-checker first
     git_status_data, git_error = _call_git_status_checker(project_dirs)
     repositories = git_status_data.get('repositories', []) if git_status_data else []
     
-    # Use fallback if git-status-checker failed or found no repos
-    if git_error or not repositories:
+    # Use git-status-checker results if available
+    if git_status_data and repositories:
+        logger.info(f"Using git-status-checker results: {len(repositories)} repositories")
+        for repo_status in repositories:
+            try:
+                repo_path_str = repo_status.get('path', '')
+                repo_path = Path(repo_path_str)
+                if repo_path.exists():
+                    project = _process_repo(repo_path, repo_status)
+                    if project:
+                        projects_data.append(project)
+                else:
+                    logger.warning(f"Repository path does not exist: {repo_path}")
+            except Exception as e:
+                logger.warning(f"Error processing repository {repo_status.get('path', 'unknown')}: {e}")
+                errors.append(f"Error processing {repo_status.get('path', 'unknown')}: {str(e)}")
+    else:
+        # Fallback to manual scanning
         if git_error and git_error != "No git repositories found in configured directories":
             logger.warning(f"git-status-checker error: {git_error}, using fallback")
+            errors.append(git_error)
         
         repos = _find_git_repos(project_dirs)
-        if not repos:
-            return [], f"No git repositories found. Checked directories: {', '.join(project_dirs)}"
-        
-        projects_data = [p for p in (_process_repo(r) for r in repos) if p]
-    else:
-        projects_data = [p for p in (_process_repo(Path(r.get('path', '')), r) 
-                                     for r in repositories) if p]
+        if repos:
+            logger.info(f"Found {len(repos)} repositories via manual scan")
+            for repo_path in repos:
+                try:
+                    project = _process_repo(repo_path)
+                    if project:
+                        projects_data.append(project)
+                except Exception as e:
+                    logger.warning(f"Error processing repository {repo_path}: {e}")
+                    errors.append(f"Error processing {repo_path}: {str(e)}")
+        else:
+            if not projects_data:
+                return [], f"No git repositories found. Checked directories: {', '.join(project_dirs)}"
     
     projects_data.sort(key=lambda x: x['name'].lower())
-    logger.info(f"Collected {len(projects_data)} projects")
+    logger.info(f"Collected {len(projects_data)} projects from {len(project_dirs)} directories")
     
-    return projects_data, git_error if git_error and not projects_data else None
+    # Return error only if no projects were found and there were errors
+    error = None
+    if not projects_data and errors:
+        error = "; ".join(errors[:3])  # Limit error message length
+    elif errors and len(errors) > len(projects_data):
+        error = f"Some directories had errors: {len(errors)} errors, {len(projects_data)} projects found"
+    
+    return projects_data, error
 
 
 @projects_bp.route('/')
