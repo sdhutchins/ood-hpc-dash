@@ -5,12 +5,15 @@
 #projectsList {
     min-height: 200px;
 }
-/* Prevent layout shift during collapse animation */
-.project-card {
-    contain: layout style;
-}
 .project-card .card {
     overflow: hidden;
+}
+/* Pure CSS icon rotation - no JS needed */
+.project-card .btn[aria-expanded="true"] .fa-chevron-down {
+    transform: rotate(180deg);
+}
+.project-card .btn .fa-chevron-down {
+    transition: transform 0.2s ease;
 }
 .pagination {
     margin-top: 1rem;
@@ -232,7 +235,7 @@
                             data-bs-target="#details-{{ idx }}"
                             aria-expanded="false"
                             aria-controls="details-{{ idx }}">
-                        <i class="fas fa-chevron-down" data-icon-target="details-{{ idx }}"></i>
+                        <i class="fas fa-chevron-down"></i>
                     </button>
                 </div>
                 <div class="collapse mt-2 pt-2 border-top" id="details-{{ idx }}">
@@ -339,7 +342,6 @@ function loadProjectsData() {
                 return;
             }
             renderProjects(data.projects, data.total);
-            setTimeout(setupCollapseHandlers, 100);
         })
         .catch(err => {
             hide(loading);
@@ -395,9 +397,6 @@ function renderPage() {
     
     // Render pagination
     renderPagination(paginationContainer, totalPages, currentPage);
-    
-    // Setup collapse handlers for new content
-    setupCollapseHandlers();
 }
 
 function renderPagination(container, totalPages, current) {
@@ -519,7 +518,7 @@ function generateProjectHTML(project, index) {
                             data-bs-target="#details-${index}"
                             aria-expanded="false"
                             aria-controls="details-${index}">
-                        <i class="fas fa-chevron-down" data-icon-target="details-${index}"></i>
+                        <i class="fas fa-chevron-down"></i>
                     </button>
                 </div>
                 <div class="collapse mt-2 pt-2 border-top" id="details-${index}">
@@ -561,35 +560,8 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// Setup collapse handlers (works for both static and dynamic content)
-function setupCollapseHandlers() {
-    document.querySelectorAll('[data-bs-toggle="collapse"]').forEach(btn => {
-        // Skip if already set up
-        if (btn.dataset.setup === 'true') return;
-        btn.dataset.setup = 'true';
-        
-        const target = btn.getAttribute('data-bs-target');
-        const icon = btn.querySelector('[data-icon-target]');
-        if (!icon || !target) return;
-        
-        const collapseEl = document.querySelector(target);
-        if (!collapseEl) return;
-        
-        collapseEl.addEventListener('show.bs.collapse', () => {
-            icon.classList.remove('fa-chevron-down');
-            icon.classList.add('fa-chevron-up');
-        });
-        collapseEl.addEventListener('hide.bs.collapse', () => {
-            icon.classList.remove('fa-chevron-up');
-            icon.classList.add('fa-chevron-down');
-        });
-    });
-}
-
 // Initialize on DOM ready
 document.addEventListener('DOMContentLoaded', function() {
-    setupCollapseHandlers();
-    
     const pageData = el('projectsPageData');
     if (pageData?.dataset.loading === 'true') {
         loadProjectsData();
