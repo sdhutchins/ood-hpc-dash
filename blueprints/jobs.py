@@ -179,6 +179,7 @@ def _is_job_recent(job_start: str, days: int = 90) -> bool:
 def _call_seff(job_id: str, use_cache: bool = True, force_refresh: bool = False) -> Tuple[Optional[str], Optional[str]]:
     """
     Call seff to get detailed job efficiency report, with caching.
+    Uses bash -lc to ensure proper environment for seff (Perl script needs SLURM libraries).
     
     Args:
         job_id: Job ID to get efficiency report for
@@ -207,13 +208,33 @@ def _call_seff(job_id: str, use_cache: bool = True, force_refresh: bool = False)
             _save_seff_cache(cache)
         return None, error_msg
     
+    # seff is a Perl script that needs SLURM libraries in LD_LIBRARY_PATH
+    # Use bash -lc to get proper environment, or set LD_LIBRARY_PATH explicitly
+    bash_path = find_binary(['/bin/bash', '/usr/bin/bash'])
+    if not bash_path:
+        bash_path = '/bin/bash'
+    
+    # Set up environment with SLURM library paths
+    env = os.environ.copy()
+    slurm_base = '/cm/shared/apps/slurm/18.08.9'
+    if os.path.exists(slurm_base):
+        lib_path = f'{slurm_base}/lib64'
+        if os.path.exists(lib_path):
+            # Add to LD_LIBRARY_PATH
+            existing_ld_path = env.get('LD_LIBRARY_PATH', '')
+            if existing_ld_path:
+                env['LD_LIBRARY_PATH'] = f'{lib_path}:{existing_ld_path}'
+            else:
+                env['LD_LIBRARY_PATH'] = lib_path
+    
     try:
+        # Use bash -lc to run seff with proper environment
         result = subprocess.run(
-            [seff_path, job_id],
+            [bash_path, '-lc', f'{seff_path} {job_id}'],
             capture_output=True,
             text=True,
             timeout=10,
-            env={'PATH': '/usr/bin:/bin'},
+            env=env,
             cwd=Path.cwd(),
         )
         if result.returncode == 0:
@@ -684,13 +705,31 @@ def _preload_seff_cache() -> None:
                     continue
                 
                 # Fetch seff data directly (don't use _call_seff to avoid cache thrashing)
+                # seff is a Perl script that needs SLURM libraries in LD_LIBRARY_PATH
+                bash_path = find_binary(['/bin/bash', '/usr/bin/bash'])
+                if not bash_path:
+                    bash_path = '/bin/bash'
+                
+                # Set up environment with SLURM library paths
+                env = os.environ.copy()
+                slurm_base = '/cm/shared/apps/slurm/18.08.9'
+                if os.path.exists(slurm_base):
+                    lib_path = f'{slurm_base}/lib64'
+                    if os.path.exists(lib_path):
+                        existing_ld_path = env.get('LD_LIBRARY_PATH', '')
+                        if existing_ld_path:
+                            env['LD_LIBRARY_PATH'] = f'{lib_path}:{existing_ld_path}'
+                        else:
+                            env['LD_LIBRARY_PATH'] = lib_path
+                
                 try:
+                    # Use bash -lc to run seff with proper environment
                     result = subprocess.run(
-                        [seff_path, job_id],
+                        [bash_path, '-lc', f'{seff_path} {job_id}'],
                         capture_output=True,
                         text=True,
                         timeout=10,
-                        env={'PATH': '/usr/bin:/bin'},
+                        env=env,
                         cwd=Path.cwd(),
                     )
                     
