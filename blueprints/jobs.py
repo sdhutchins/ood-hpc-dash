@@ -131,8 +131,8 @@ def _call_sacct(user: Optional[str] = None, max_jobs: int = 100) -> Tuple[Option
     if not user:
         user = os.environ.get('USER', '')
     
-    # Calculate date 30 days ago in YYYY-MM-DD format
-    start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+    # Calculate date 90 days ago in YYYY-MM-DD format
+    start_date = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
     
     # Format: JobID,JobName,State,Partition,Start,End,Elapsed,TotalCPU,ReqCPUS,MaxRSS,AllocCPUS,CPUTime
     # Note: CPUUtilization is not available in all SLURM versions, so we calculate it from TotalCPU
@@ -146,7 +146,7 @@ def _call_sacct(user: Optional[str] = None, max_jobs: int = 100) -> Tuple[Option
         '--units=M',  # Memory in MB
         '--allocations',  # Only show job allocations, not steps
         '-u', user,
-        '--starttime', start_date,  # Last 30 days
+        '--starttime', start_date,  # Last 90 days
     ]
     
     try:
@@ -533,17 +533,21 @@ def jobs():
         else:
             user_jobs_error = error_msg
     
-    # Get job history (first page)
+    # Get job history with pagination
     job_history = []
     total_history = 0
     history_error = None
+    current_page = int(request.args.get('page', 1))
+    per_page = 10
+    
     if username:
-        output, error_msg = _call_sacct(user=username, max_jobs=100)
+        output, error_msg = _call_sacct(user=username, max_jobs=1000)  # Get more jobs for pagination
         if not error_msg and output:
             all_jobs = _parse_sacct_output(output)
             total_history = len(all_jobs)
-            # Get first page (10 jobs)
-            job_history = all_jobs[:10]
+            # Apply pagination
+            offset = (current_page - 1) * per_page
+            job_history = all_jobs[offset:offset + per_page]
         else:
             history_error = error_msg
     
@@ -573,6 +577,9 @@ def jobs():
                 'nodes_pct': slurm_load_data.get('nodes_pct'),
             })
     
+    # Calculate pagination info
+    total_pages = (total_history + per_page - 1) // per_page if total_history > 0 else 0
+    
     return render_template(
         'jobs.html',
         partitions=partitions,
@@ -585,6 +592,9 @@ def jobs():
         total_history=total_history,
         history_error=history_error,
         username=username,
+        current_page=current_page,
+        total_pages=total_pages,
+        per_page=per_page,
     )
 
 
@@ -688,7 +698,7 @@ def jobs_history():
     per_page = int(request.args.get('per_page', 10))
     offset = (page - 1) * per_page
     
-    output, error = _call_sacct(user=username, max_jobs=100)
+    output, error = _call_sacct(user=username, max_jobs=1000)  # Get more jobs for pagination
     if error:
         return jsonify({'error': error}), 500
     

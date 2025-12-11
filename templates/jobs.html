@@ -83,7 +83,10 @@
         <div class="card shadow-sm mb-3">
             <div class="card-header" style="background-color: var(--theme-bg-color);">
                 <div class="d-flex justify-content-between align-items-center">
-                    <h5 class="mb-0"><i class="fas fa-history me-2"></i>Job History</h5>
+                    <div>
+                        <h5 class="mb-0"><i class="fas fa-history me-2"></i>Job History</h5>
+                        <small class="text-muted">Showing jobs from the last 90 days</small>
+                    </div>
                     <button type="button" class="btn btn-sm" id="refreshHistoryBtn" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);">
                         <i class="fas fa-sync-alt me-1"></i>Refresh
                     </button>
@@ -144,9 +147,50 @@
                     </table>
                 </div>
                 <div class="card-footer bg-white">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <small class="text-muted">
+                            Showing {{ ((current_page - 1) * per_page) + 1 }} to {{ [current_page * per_page, total_history]|min }} of {{ total_history }} jobs
+                        </small>
+                    </div>
                     <nav aria-label="Job history pagination">
                         <ul class="pagination pagination-sm mb-0 justify-content-center" id="historyPagination">
-                            <!-- Pagination will be populated by JavaScript -->
+                            {% if total_pages > 1 %}
+                                {% if current_page > 1 %}
+                                <li class="page-item">
+                                    <a class="page-link" href="{{ url_for('jobs.jobs', page=current_page - 1) }}">Previous</a>
+                                </li>
+                                {% else %}
+                                <li class="page-item disabled">
+                                    <span class="page-link">Previous</span>
+                                </li>
+                                {% endif %}
+                                
+                                {% for page_num in range(1, total_pages + 1) %}
+                                    {% if page_num == current_page %}
+                                    <li class="page-item active">
+                                        <span class="page-link">{{ page_num }}</span>
+                                    </li>
+                                    {% elif page_num <= 2 or page_num >= total_pages - 1 or (page_num >= current_page - 1 and page_num <= current_page + 1) %}
+                                    <li class="page-item">
+                                        <a class="page-link" href="{{ url_for('jobs.jobs', page=page_num) }}">{{ page_num }}</a>
+                                    </li>
+                                    {% elif page_num == current_page - 2 or page_num == current_page + 2 %}
+                                    <li class="page-item disabled">
+                                        <span class="page-link">...</span>
+                                    </li>
+                                    {% endif %}
+                                {% endfor %}
+                                
+                                {% if current_page < total_pages %}
+                                <li class="page-item">
+                                    <a class="page-link" href="{{ url_for('jobs.jobs', page=current_page + 1) }}">Next</a>
+                                </li>
+                                {% else %}
+                                <li class="page-item disabled">
+                                    <span class="page-link">Next</span>
+                                </li>
+                                {% endif %}
+                            {% endif %}
                         </ul>
                     </nav>
                 </div>
@@ -468,8 +512,10 @@ function sortTable(columnIndex) {
         }
     });
     
-    // Job history pagination
-    let currentPage = 1;
+    // Job history pagination (kept for potential future AJAX use)
+    // Note: Currently using server-side pagination, but keeping this for reference
+    const urlParams = new URLSearchParams(window.location.search);
+    let currentPage = parseInt(urlParams.get('page')) || 1;
     const perPage = 10;
     
     function loadJobHistory(page) {
@@ -599,21 +645,11 @@ function sortTable(columnIndex) {
     const refreshHistoryBtn = document.getElementById('refreshHistoryBtn');
     if (refreshHistoryBtn) {
         refreshHistoryBtn.addEventListener('click', function() {
-            const icon = this.querySelector('i');
-            const originalClass = icon.className;
-            icon.className = 'fas fa-spinner fa-spin me-1';
-            this.disabled = true;
-            
-            loadJobHistory(currentPage);
-            
-            setTimeout(() => {
-                icon.className = originalClass;
-                this.disabled = false;
-            }, 1000);
+            // Reload the page to refresh job history
+            const urlParams = new URLSearchParams(window.location.search);
+            const currentPage = urlParams.get('page') || 1;
+            window.location.href = `{{ url_for('jobs.jobs') }}?page=${currentPage}`;
         });
     }
-    
-    // Make loadJobHistory available globally for pagination links
-    window.loadJobHistory = loadJobHistory;
 </script>
 {% endblock %}
