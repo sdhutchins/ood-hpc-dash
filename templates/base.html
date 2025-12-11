@@ -59,6 +59,34 @@
   </nav>
     <!-- Content area -->
     <div class="container">
+      {# Flash messages #}
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="mt-3" id="flashMessages">
+            {% for category, message in messages %}
+              <div class="alert alert-{{ 'danger' if category == 'error' else category }} alert-dismissible fade show" role="alert" data-auto-dismiss="true">
+                <i class="fas fa-{{ 'exclamation-circle' if category == 'error' else 'check-circle' if category == 'success' else 'info-circle' }} me-2"></i>
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+              </div>
+            {% endfor %}
+          </div>
+          <script>
+            // Auto-dismiss success messages after 5 seconds
+            document.addEventListener('DOMContentLoaded', function() {
+              const alerts = document.querySelectorAll('[data-auto-dismiss="true"]');
+              alerts.forEach(function(alert) {
+                if (alert.classList.contains('alert-success')) {
+                  setTimeout(function() {
+                    const bsAlert = new bootstrap.Alert(alert);
+                    bsAlert.close();
+                  }, 5000);
+                }
+              });
+            });
+          </script>
+        {% endif %}
+      {% endwith %}
       {% block content %}{% endblock %}
     </div>
 </body>

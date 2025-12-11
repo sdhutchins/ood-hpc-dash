@@ -39,8 +39,7 @@
     <div class="card-body">
       <label for="conda_envs_paths" class="form-label fw-semibold">Conda Env Paths</label>
       <textarea class="form-control mb-2" id="conda_envs_paths" name="conda_envs_paths" rows="3"
-                placeholder="$HOME/.conda&#10;$HOME/miniconda3/envs">{%- for p in settings.conda_envs_paths -%}{{ p }}
-{%- endfor -%}</textarea>
+                placeholder="$HOME/.conda&#10;$HOME/miniconda3/envs">{% if settings.conda_envs_paths %}{{ settings.conda_envs_paths|join('\n') }}{% endif %}</textarea>
       <div class="form-text">One path per line. Environment variables like $HOME are allowed.</div>
     </div>
   </div>
@@ -49,8 +48,7 @@
     <div class="card-body">
       <label for="project_directories" class="form-label fw-semibold">Project Directories</label>
       <textarea class="form-control mb-2" id="project_directories" name="project_directories" rows="3"
-                placeholder="$HOME/Documents/Git-Repos&#10;$HOME/Dev/src-repos">{%- if settings.project_directories -%}{%- for p in settings.project_directories -%}{{ p }}
-{%- endfor -%}{%- endif -%}</textarea>
+                placeholder="$HOME/Documents/Git-Repos&#10;$HOME/Dev/src-repos">{% if settings.project_directories %}{{ settings.project_directories|join('\n') }}{% endif %}</textarea>
       <div class="form-text">One path per line. Base directories to scan for git repositories. Environment variables like $HOME are allowed.</div>
     </div>
   </div>

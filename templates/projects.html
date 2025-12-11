@@ -1,6 +1,24 @@
 {% extends "base.html" %}
 
 {% block content %}
+<style>
+#projectsList {
+    min-height: 200px;
+    transition: opacity 0.2s ease-in-out;
+}
+#projectsList.loading {
+    opacity: 0.5;
+}
+.pagination {
+    margin-top: 1rem;
+}
+.page-link {
+    transition: all 0.2s ease;
+}
+.page-link:hover {
+    transform: translateY(-1px);
+}
+</style>
 <div class="row mb-4">
     <div class="col">
         <br/>
@@ -47,6 +65,122 @@
 
 <div id="projectsContainer">
 {% if projects and not loading %}
+<script>
+// Initialize pagination for server-rendered content
+(function() {
+    const projectsList = document.getElementById('projectsList');
+    if (projectsList && projectsList.children.length > 0) {
+        const allProjects = Array.from(projectsList.children).map((el, idx) => ({
+            element: el,
+            index: idx
+        }));
+        const totalProjects = allProjects.length;
+        const perPage = 20;
+        let currentPage = 1;
+        
+        if (totalProjects > perPage) {
+            // Store original projects
+            window.serverRenderedProjects = allProjects;
+            window.serverCurrentPage = currentPage;
+            window.serverPerPage = perPage;
+            
+            // Initialize pagination
+            renderServerPagination();
+        }
+    }
+    
+    function renderServerPagination() {
+        const projectsList = document.getElementById('projectsList');
+        const paginationContainer = document.getElementById('projectsPagination');
+        if (!projectsList || !paginationContainer) return;
+        
+        const allProjects = window.serverRenderedProjects;
+        const current = window.serverCurrentPage;
+        const perPage = window.serverPerPage;
+        const totalPages = Math.ceil(allProjects.length / perPage);
+        
+        const start = (current - 1) * perPage;
+        const end = start + perPage;
+        
+        // Hide all projects
+        allProjects.forEach(p => p.element.style.display = 'none');
+        // Show current page
+        allProjects.slice(start, end).forEach(p => p.element.style.display = 'block');
+        
+        // Render pagination
+        renderPagination(paginationContainer, totalPages, current, true);
+    }
+    
+    function changeServerPage(page) {
+        window.serverCurrentPage = page;
+        renderServerPagination();
+        const container = document.getElementById('projectsContainer');
+        if (container) {
+            container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+        return false;
+    }
+    
+    function renderPagination(container, totalPages, current, isServer) {
+        if (totalPages <= 1) {
+            container.innerHTML = '';
+            return;
+        }
+        
+        let html = '<nav aria-label="Projects pagination"><ul class="pagination pagination-sm justify-content-center mb-0">';
+        
+        // Previous button
+        html += `<li class="page-item ${current === 1 ? 'disabled' : ''}">`;
+        html += current === 1 
+            ? '<span class="page-link">Previous</span>'
+            : `<a class="page-link" href="#" onclick="changeServerPage(${current - 1}); return false;">Previous</a>`;
+        html += '</li>';
+        
+        // Page numbers with ellipsis
+        const showPages = 5;
+        let startPage = Math.max(1, current - Math.floor(showPages / 2));
+        let endPage = Math.min(totalPages, startPage + showPages - 1);
+        
+        if (endPage - startPage < showPages - 1) {
+            startPage = Math.max(1, endPage - showPages + 1);
+        }
+        
+        if (startPage > 1) {
+            html += '<li class="page-item"><a class="page-link" href="#" onclick="changeServerPage(1); return false;">1</a></li>';
+            if (startPage > 2) {
+                html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+            }
+        }
+        
+        for (let i = startPage; i <= endPage; i++) {
+            html += `<li class="page-item ${i === current ? 'active' : ''}">`;
+            html += i === current
+                ? `<span class="page-link">${i}</span>`
+                : `<a class="page-link" href="#" onclick="changeServerPage(${i}); return false;">${i}</a>`;
+            html += '</li>';
+        }
+        
+        if (endPage < totalPages) {
+            if (endPage < totalPages - 1) {
+                html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+            }
+            html += `<li class="page-item"><a class="page-link" href="#" onclick="changeServerPage(${totalPages}); return false;">${totalPages}</a></li>`;
+        }
+        
+        // Next button
+        html += `<li class="page-item ${current === totalPages ? 'disabled' : ''}">`;
+        html += current === totalPages
+            ? '<span class="page-link">Next</span>'
+            : `<a class="page-link" href="#" onclick="changeServerPage(${current + 1}); return false;">Next</a>`;
+        html += '</li>';
+        
+        html += '</ul></nav>';
+        container.innerHTML = html;
+    }
+    
+    window.changeServerPage = changeServerPage;
+})();
+</script>
 <div class="row mb-3">
     <div class="col">
         <div class="alert alert-info py-2">
@@ -54,6 +188,7 @@
         </div>
     </div>
 </div>
+<div id="projectsList">
 
 {%- for project in projects -%}
 {% set idx = loop.index0 %}
@@ -147,7 +282,8 @@
     </div>
 </div>
 {%- endfor -%}
-
+</div>
+<div id="projectsPagination"></div>
 {% else %}
 <div class="row mb-4" id="noProjectsMessage" style="display: none;">
     <div class="col">
@@ -193,6 +329,7 @@ function loadProjectsData() {
                 return;
             }
             renderProjects(data.projects, data.total);
+            setTimeout(setupCollapseHandlers, 100);
         })
         .catch(err => {
             hide(loading);
@@ -201,9 +338,16 @@ function loadProjectsData() {
         });
 }
 
+let allProjects = [];
+let currentPage = 1;
+const perPage = 20;
+
 function renderProjects(projects, total) {
     const container = el('projectsContainer');
     if (!container) return;
+    
+    allProjects = projects;
+    currentPage = 1;
     
     container.innerHTML = `
         <div class="row mb-3">
@@ -213,13 +357,114 @@ function renderProjects(projects, total) {
                 </div>
             </div>
         </div>
+        <div id="projectsList"></div>
+        <div id="projectsPagination"></div>
     `;
     
-    projects.forEach((project, index) => {
-        const div = document.createElement('div');
-        div.innerHTML = generateProjectHTML(project, index);
-        container.appendChild(div.firstElementChild);
+    renderPage();
+}
+
+function renderPage() {
+    const listContainer = el('projectsList');
+    const paginationContainer = el('projectsPagination');
+    if (!listContainer || !paginationContainer) return;
+    
+    // Add loading state
+    listContainer.classList.add('loading');
+    
+    // Use requestAnimationFrame for smooth transition
+    requestAnimationFrame(() => {
+        const start = (currentPage - 1) * perPage;
+        const end = start + perPage;
+        const pageProjects = allProjects.slice(start, end);
+        const totalPages = Math.ceil(allProjects.length / perPage);
+        
+        // Clear and render projects
+        listContainer.innerHTML = '';
+        pageProjects.forEach((project, index) => {
+            const div = document.createElement('div');
+            div.innerHTML = generateProjectHTML(project, start + index);
+            listContainer.appendChild(div.firstElementChild);
+        });
+        
+        // Render pagination
+        renderPagination(paginationContainer, totalPages, currentPage);
+        
+        // Remove loading state
+        listContainer.classList.remove('loading');
+        
+        // Setup collapse handlers for new content
+        setupCollapseHandlers();
+        
+        // Smooth scroll to top of projects section
+        const container = el('projectsContainer');
+        if (container) {
+            container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
     });
+}
+
+function renderPagination(container, totalPages, current) {
+    if (totalPages <= 1) {
+        container.innerHTML = '';
+        return;
+    }
+    
+    let html = '<nav aria-label="Projects pagination"><ul class="pagination pagination-sm justify-content-center mb-0">';
+    
+    // Previous button
+    html += `<li class="page-item ${current === 1 ? 'disabled' : ''}">`;
+    html += current === 1 
+        ? '<span class="page-link">Previous</span>'
+        : `<a class="page-link" href="#" onclick="changePage(${current - 1}); return false;">Previous</a>`;
+    html += '</li>';
+    
+    // Page numbers with ellipsis
+    const showPages = 5;
+    let startPage = Math.max(1, current - Math.floor(showPages / 2));
+    let endPage = Math.min(totalPages, startPage + showPages - 1);
+    
+    if (endPage - startPage < showPages - 1) {
+        startPage = Math.max(1, endPage - showPages + 1);
+    }
+    
+    if (startPage > 1) {
+        html += '<li class="page-item"><a class="page-link" href="#" onclick="changePage(1); return false;">1</a></li>';
+        if (startPage > 2) {
+            html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+        }
+    }
+    
+    for (let i = startPage; i <= endPage; i++) {
+        html += `<li class="page-item ${i === current ? 'active' : ''}">`;
+        html += i === current
+            ? `<span class="page-link">${i}</span>`
+            : `<a class="page-link" href="#" onclick="changePage(${i}); return false;">${i}</a>`;
+        html += '</li>';
+    }
+    
+    if (endPage < totalPages) {
+        if (endPage < totalPages - 1) {
+            html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+        }
+        html += `<li class="page-item"><a class="page-link" href="#" onclick="changePage(${totalPages}); return false;">${totalPages}</a></li>`;
+    }
+    
+    // Next button
+    html += `<li class="page-item ${current === totalPages ? 'disabled' : ''}">`;
+    html += current === totalPages
+        ? '<span class="page-link">Next</span>'
+        : `<a class="page-link" href="#" onclick="changePage(${current + 1}); return false;">Next</a>`;
+    html += '</li>';
+    
+    html += '</ul></nav>';
+    container.innerHTML = html;
+}
+
+function changePage(page) {
+    currentPage = page;
+    renderPage();
+    return false;
 }
 
 function generateProjectHTML(project, index) {
@@ -318,9 +563,13 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// Toggle chevron icons on collapse
-document.addEventListener('DOMContentLoaded', function() {
+// Setup collapse handlers (works for both static and dynamic content)
+function setupCollapseHandlers() {
     document.querySelectorAll('[data-bs-toggle="collapse"]').forEach(btn => {
+        // Skip if already set up
+        if (btn.dataset.setup === 'true') return;
+        btn.dataset.setup = 'true';
+        
         const target = btn.getAttribute('data-bs-target');
         const icon = btn.querySelector('[data-icon-target]');
         if (!icon || !target) return;
@@ -337,6 +586,11 @@ document.addEventListener('DOMContentLoaded', function() {
             icon.classList.add('fa-chevron-down');
         });
     });
+}
+
+// Toggle chevron icons on collapse
+document.addEventListener('DOMContentLoaded', function() {
+    setupCollapseHandlers();
     
     const pageData = el('projectsPageData');
     if (pageData?.dataset.loading === 'true') {
