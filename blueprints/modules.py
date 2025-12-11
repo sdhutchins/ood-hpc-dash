@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # Path to modules file
 MODULES_FILE = Path('logs/modules.txt')
 CATEGORIES_FILE = Path('config/module_categories.json')
+DESCRIPTIONS_CACHE_FILE = Path('logs/module_descriptions_cache.json')
 
 # Module cache (stores grouped modules data and timestamp)
 _modules_cache: Optional[List[Dict[str, Any]]] = None
@@ -189,6 +190,42 @@ def _get_module_families() -> Tuple[Optional[List[str]], Optional[str]]:
     
     logger.info(f"Found {len(families)} module families")
     return families, None
+
+
+def _load_descriptions_cache() -> Dict[str, str]:
+    """Load module descriptions cache from file.
+    
+    Returns:
+        Dictionary mapping module family names to descriptions
+    """
+    if not DESCRIPTIONS_CACHE_FILE.exists():
+        return {}
+    
+    try:
+        with DESCRIPTIONS_CACHE_FILE.open('r', encoding='utf-8') as f:
+            cache = json.load(f)
+        if isinstance(cache, dict):
+            logger.debug(f"Loaded {len(cache)} cached descriptions")
+            return cache
+        return {}
+    except Exception as e:
+        logger.warning(f"Error loading descriptions cache: {e}")
+        return {}
+
+
+def _save_descriptions_cache(cache: Dict[str, str]) -> None:
+    """Save module descriptions cache to file.
+    
+    Args:
+        cache: Dictionary mapping module family names to descriptions
+    """
+    try:
+        DESCRIPTIONS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with DESCRIPTIONS_CACHE_FILE.open('w', encoding='utf-8') as f:
+            json.dump(cache, f, indent=2, ensure_ascii=False)
+        logger.debug(f"Saved {len(cache)} descriptions to cache")
+    except Exception as e:
+        logger.warning(f"Error saving descriptions cache: {e}")
 
 
 def _get_module_details(module_name: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -398,12 +435,22 @@ def _get_all_modules_two_stage_streaming():
     yield {'type': 'progress', 'message': f'Displayed {total_families} modules, loading descriptions...', 'total': total_families, 'current': 0}
     
     # Step 3: Fetch descriptions in background and update modules
+    # Load descriptions cache
+    descriptions_cache = _load_descriptions_cache()
     failed_count = 0
     max_workers = 20  # Reduced from 100 to prevent overwhelming system
     completed = 0
+    new_descriptions = {}  # Track new descriptions to save to cache
     
     def fetch_description(family_name):
-        """Fetch description for a single module family."""
+        """Fetch description for a single module family, using cache if available."""
+        # Check cache first
+        if family_name in descriptions_cache:
+            cached_desc = descriptions_cache[family_name]
+            logger.debug(f"Using cached description for {family_name}")
+            return cached_desc, None, family_name
+        
+        # Not in cache - fetch it
         try:
             details, error = _get_module_details(family_name)
             if error is not None:
@@ -413,7 +460,11 @@ def _get_all_modules_two_stage_streaming():
                 return None, None, family_name  # Skip silently
             if details is None:
                 return None, None, family_name  # Skipped
-            return details.get('description', ''), None, family_name
+            description = details.get('description', '')
+            # Store in new_descriptions to save to cache later
+            if description:
+                new_descriptions[family_name] = description
+            return description, None, family_name
         except Exception as e:
             logger.debug(f"Exception getting description for {family_name}: {e}")
             return None, None, family_name  # Skip silently
@@ -456,6 +507,13 @@ def _get_all_modules_two_stage_streaming():
     
     if failed_count > 0:
         yield {'type': 'progress', 'message': f'Failed to get descriptions for {failed_count} modules', 'total': total_families, 'current': total_families}
+    
+    # Save new descriptions to cache
+    if new_descriptions:
+        # Merge with existing cache
+        descriptions_cache.update(new_descriptions)
+        _save_descriptions_cache(descriptions_cache)
+        logger.info(f"Added {len(new_descriptions)} new descriptions to cache")
     
     yield {'type': 'descriptions_complete', 'message': 'All descriptions loaded'}
     total_versions = sum(len(versions) for versions in modules_dict.values())
@@ -859,13 +917,23 @@ def stream_descriptions():
             total_families = len(families)
             yield f"data: {json.dumps({'type': 'descriptions_start', 'message': 'Loading descriptions...'})}\n\n"
             
+            # Load descriptions cache
+            descriptions_cache = _load_descriptions_cache()
             # Fetch descriptions in parallel
             max_workers = 20  # Reduced to prevent overwhelming system
             completed = 0
             failed_count = 0
+            new_descriptions = {}  # Track new descriptions to save to cache
             
             def fetch_description(family_name):
-                """Fetch description for a single module family."""
+                """Fetch description for a single module family, using cache if available."""
+                # Check cache first
+                if family_name in descriptions_cache:
+                    cached_desc = descriptions_cache[family_name]
+                    logger.debug(f"Using cached description for {family_name}")
+                    return cached_desc, None, family_name
+                
+                # Not in cache - fetch it
                 try:
                     details, error = _get_module_details(family_name)
                     if error is not None:
@@ -875,7 +943,11 @@ def stream_descriptions():
                         return None, None, family_name  # Skip silently
                     if details is None:
                         return None, None, family_name
-                    return details.get('description', ''), None, family_name
+                    description = details.get('description', '')
+                    # Store in new_descriptions to save to cache later
+                    if description:
+                        new_descriptions[family_name] = description
+                    return description, None, family_name
                 except Exception as e:
                     logger.debug(f"Exception getting description for {family_name}: {e}")
                     return None, None, family_name  # Skip silently
@@ -906,6 +978,13 @@ def stream_descriptions():
                     except Exception as e:
                         logger.error(f"Error processing description for {family_name}: {e}", exc_info=True)
                         failed_count += 1
+            
+            # Save new descriptions to cache
+            if new_descriptions:
+                # Merge with existing cache
+                descriptions_cache.update(new_descriptions)
+                _save_descriptions_cache(descriptions_cache)
+                logger.info(f"Added {len(new_descriptions)} new descriptions to cache")
             
             yield f"data: {json.dumps({'type': 'descriptions_complete', 'message': 'All descriptions loaded'})}\n\n"
         finally:
