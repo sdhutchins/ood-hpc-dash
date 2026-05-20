@@ -2,7 +2,10 @@
 {% block content %}
 <br/>
 <h3>Conda Environments</h3>
-<p>The following are the conda environments for the current user based on the paths specified in the settings.
+<p>
+  The following are the conda environments for the current user based on the
+  paths specified in the settings.
+</p>
 {% if warning %}
 <div class="alert alert-warning">{{ warning }}</div>
 {% endif %}
@@ -24,13 +27,27 @@
         <div class="table-responsive">
           <table class="table table-hover table-sm align-middle mb-0">
             <thead style="background-color: var(--theme-bg-color);">
-              <tr><th>Name</th><th>Path</th></tr>
+              <tr>
+                <th>Name</th>
+                <th>Path</th>
+                <th>Dependencies / Env File</th>
+              </tr>
             </thead>
             <tbody>
             {% for env in envs_by_category[cat] %}
               <tr>
                 <td>{{ env.name }}</td>
                 <td class="text-break"><code>{{ env.path }}</code></td>
+                <td>
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-primary view-env-export"
+                    data-env-name="{{ env.name }}"
+                    data-env-path="{{ env.path }}"
+                  >
+                    View
+                  </button>
+                </td>
               </tr>
             {% endfor %}
             </tbody>
@@ -43,4 +60,76 @@
 {% else %}
   <div class="alert alert-secondary mb-0">No environments found.</div>
 {% endif %}
+
+<div
+  class="modal fade"
+  id="envExportModal"
+  tabindex="-1"
+  aria-labelledby="envExportModalLabel"
+  aria-hidden="true"
+>
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="envExportModalLabel">Environment File</h5>
+        <button
+          type="button"
+          class="btn-close"
+          data-bs-dismiss="modal"
+          aria-label="Close"
+        ></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-muted mb-2" id="envExportPath"></p>
+        <pre class="bg-light border rounded p-3 mb-0"><code
+          id="envExportOutput"
+        >Loading...</code></pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  const modalElement = document.getElementById('envExportModal');
+  const modalTitle = document.getElementById('envExportModalLabel');
+  const modalPath = document.getElementById('envExportPath');
+  const modalOutput = document.getElementById('envExportOutput');
+  const envExportModal = new bootstrap.Modal(modalElement);
+
+  document.querySelectorAll('.view-env-export').forEach(function(button) {
+    button.addEventListener('click', function() {
+      const envName = button.dataset.envName;
+      const envPath = button.dataset.envPath;
+
+      modalTitle.textContent = envName + ' Environment File';
+      modalPath.textContent = envPath;
+      modalOutput.textContent = 'Loading...';
+      envExportModal.show();
+
+      fetch('{{ url_for("envs.export_env") }}', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ path: envPath }),
+      })
+        .then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok) {
+              throw new Error(data.error || 'Unable to export environment.');
+            }
+            return data;
+          });
+        })
+        .then(function(data) {
+          modalOutput.textContent = data.output || '(empty export)';
+        })
+        .catch(function(error) {
+          modalOutput.textContent = error.message;
+        });
+    });
+  });
+});
+</script>
 {% endblock %}
