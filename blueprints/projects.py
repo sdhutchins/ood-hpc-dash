@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__.capitalize())
 PROJECT_DIRS_CONFIG_KEY = 'project_directories'
 PROJECTS_CACHE_FILE = Path('logs/projects_cache.json')
 CACHE_VALIDITY_SECONDS = 3600  # 1 hour
+PROJECTS_CACHE_SCHEMA_VERSION = 2
 
 
 def _find_git_status_checker() -> Optional[str]:
@@ -209,16 +210,11 @@ def _get_git_info_from_status_checker(
                 git_info['last_commit_author'] = parts[1]
                 git_info['last_commit_date'] = parts[3]
         
-        # Get remote URL
-        result = subprocess.run(
-            ['git', 'remote', 'get-url', 'origin'],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            timeout=10,
+        git_info['remote'] = _get_remote_url(
+            repo_path,
+            git_info['branch'],
+            repo_status,
         )
-        if result.returncode == 0:
-            git_info['remote'] = result.stdout.strip()
         
     except (PermissionError, OSError) as e:
         # Permission errors - log but continue with available data
@@ -229,6 +225,76 @@ def _get_git_info_from_status_checker(
         git_info['fetch_error'] = str(e)
     
     return git_info
+
+
+def _repo_stdout(repo_path: Path, args: List[str]) -> Optional[str]:
+    """Run a read-only git command and return trimmed stdout when it succeeds."""
+    result = subprocess.run(
+        ['git', *args],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        return None
+
+    output = result.stdout.strip()
+    return output or None
+
+
+def _get_status_checker_remote(repo_status: Dict[str, Any]) -> Optional[str]:
+    """Read common remote URL fields from git-status-checker-like output."""
+    for key in ('remote', 'remote_url', 'remoteUrl', 'url'):
+        value = repo_status.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    remotes = repo_status.get('remotes')
+    if isinstance(remotes, dict):
+        for value in remotes.values():
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    return None
+
+
+def _get_remote_url(
+    repo_path: Path,
+    branch: Optional[str],
+    repo_status: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Return the best available remote URL for a repository."""
+    if repo_status:
+        checker_remote = _get_status_checker_remote(repo_status)
+        if checker_remote:
+            return checker_remote
+
+    if branch and branch != 'HEAD':
+        upstream_remote = _repo_stdout(
+            repo_path,
+            ['config', '--get', f'branch.{branch}.remote'],
+        )
+        if upstream_remote and upstream_remote != '.':
+            upstream_url = _repo_stdout(
+                repo_path,
+                ['remote', 'get-url', upstream_remote],
+            )
+            if upstream_url:
+                return upstream_url
+
+    origin_url = _repo_stdout(repo_path, ['remote', 'get-url', 'origin'])
+    if origin_url:
+        return origin_url
+
+    first_remote = _repo_stdout(repo_path, ['remote'])
+    if not first_remote:
+        return None
+
+    remote_name = first_remote.splitlines()[0].strip()
+    if not remote_name:
+        return None
+    return _repo_stdout(repo_path, ['remote', 'get-url', remote_name])
 
 
 def _get_git_info_fallback(repo_path: Path) -> Optional[Dict[str, Any]]:
@@ -304,16 +370,7 @@ def _get_git_info_fallback(repo_path: Path) -> Optional[Dict[str, Any]]:
                 git_info['last_commit_author'] = parts[1]
                 git_info['last_commit_date'] = parts[3]
         
-        # Get remote URL
-        result = subprocess.run(
-            ['git', 'remote', 'get-url', 'origin'],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            git_info['remote'] = result.stdout.strip()
+        git_info['remote'] = _get_remote_url(repo_path, git_info['branch'])
         
         # Check ahead/behind (only if remote exists)
         if git_info['branch'] and git_info.get('remote'):
@@ -749,6 +806,10 @@ def _load_projects_cache() -> Optional[Dict[str, Any]]:
         if 'timestamp' not in cache or 'projects' not in cache or 'directories' not in cache:
             logger.warning("Projects cache missing required fields")
             return None
+
+        if cache.get('schema_version') != PROJECTS_CACHE_SCHEMA_VERSION:
+            logger.info("Projects cache schema changed; refreshing project data")
+            return None
         
         # Check if cache is still valid (less than 1 hour old)
         cache_age = time.time() - cache.get('timestamp', 0)
@@ -786,6 +847,7 @@ def _save_projects_cache(projects_data: List[Dict[str, Any]], directories: List[
     try:
         PROJECTS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         cache = {
+            'schema_version': PROJECTS_CACHE_SCHEMA_VERSION,
             'timestamp': time.time(),
             'directories': directories,
             'projects': projects_data,
