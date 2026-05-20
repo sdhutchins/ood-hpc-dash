@@ -1,20 +1,13 @@
-# Standard library imports
 import logging
 import os
 
-# Third-party imports
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 
-# Local imports
 from utils import load_settings, save_settings as save_settings_to_file
 
-# Blueprint for the settings page
 settings_bp = Blueprint('settings', __name__, url_prefix='/settings')
-
-# Logger for the settings blueprint
 logger = logging.getLogger(__name__)
 
-# Whitelisted light navbar colors (value, label)
 ALLOWED_NAV_COLORS = [
     ("#e8f5e9", "Mint"),
     ("#e3f2fd", "Light Blue"),

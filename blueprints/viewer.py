@@ -1,4 +1,3 @@
-# Third-party imports
 from flask import Blueprint, render_template
 
 viewer_bp = Blueprint('viewer', __name__, url_prefix='/viewer')

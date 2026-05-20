@@ -1,4 +1,3 @@
-# Standard library imports
 import json
 import logging
 import os
@@ -9,10 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# Third-party imports
 from flask import Blueprint, jsonify, render_template, request
 
-# Local imports
 from utils import expand_path, find_binary, load_settings
 
 projects_bp = Blueprint('projects', __name__, url_prefix='/projects')

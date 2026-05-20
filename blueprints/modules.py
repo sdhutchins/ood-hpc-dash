@@ -1,42 +1,33 @@
-# Standard library imports
 import json
 import logging
 import os
 import re
 import signal
 import subprocess
+import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-import threading
 
-# Third-party imports
-from flask import Blueprint, jsonify, render_template, Response
+from flask import Blueprint, Response, jsonify, render_template
 
-# Local imports
 from utils import find_binary
 
-# Blueprint for the modules page
 modules_bp = Blueprint('modules', __name__, url_prefix='/modules')
-
-# Logger for the modules blueprint
 logger = logging.getLogger(__name__)
 
-# Path to modules file
 MODULES_FILE = Path('logs/modules.txt')
 CATEGORIES_FILE = Path('config/module_categories.json')
 
-# Module cache (stores grouped modules data and timestamp)
 _modules_cache: Optional[List[Dict[str, Any]]] = None
 _modules_cache_timestamp: Optional[float] = None
 
-# Streaming state
 _streaming_lock = threading.Lock()
 _streaming_in_progress = False
 
-# Common absolute paths for bash
 BASH_PATHS = [
     '/bin/bash',
     '/usr/bin/bash',
@@ -389,6 +380,166 @@ def _parse_module_spider_output(output: str) -> Dict[str, List[str]]:
     return modules_dict
 
 
+def _module_base_name(family_name: str, versions: list[str]) -> str:
+    """Return the display name shared by all versions in a module family."""
+    if not versions:
+        return family_name
+
+    parts = versions[0].split('/')
+    if len(parts) > 2:
+        return '/'.join(parts[:-1])
+    if len(parts) == 2:
+        return parts[0]
+    return family_name
+
+
+def _module_name_map(modules_dict: dict[str, list[str]]) -> dict[str, str]:
+    """Map Lmod family names to the display names used by the frontend."""
+    return {
+        family_name: _module_base_name(
+            family_name,
+            sorted(versions, key=_natural_sort_key),
+        )
+        for family_name, versions in modules_dict.items()
+    }
+
+
+def _module_record(
+    family_name: str,
+    versions: list[str],
+    categories_config: dict[str, str] | None,
+    description: str = '',
+) -> dict[str, object]:
+    """Build the module payload used by templates, JSON, and SSE events."""
+    sorted_versions = sorted(versions, key=_natural_sort_key)
+    base_name = _module_base_name(family_name, sorted_versions)
+
+    return {
+        'name': base_name,
+        'versions': sorted_versions,
+        'description': description,
+        'category': _categorize_module(base_name, categories_config),
+    }
+
+
+def _fetch_module_description(
+    family_name: str,
+    descriptions_cache: dict[str, str] | None = None,
+) -> tuple[str | None, str | None, str]:
+    """Fetch one module description while treating slow Lmod modules as skips."""
+    if descriptions_cache and family_name in descriptions_cache:
+        logger.debug(f"Using cached description for {family_name}")
+        return descriptions_cache[family_name], None, family_name
+
+    try:
+        details, error = _get_module_details(family_name)
+        if error is not None:
+            if "timed out" not in error.lower():
+                logger.debug(f"Module {family_name} error: {error}")
+            return None, None, family_name
+        if details is None:
+            return None, None, family_name
+        return details.get('description', ''), None, family_name
+    except Exception as e:
+        logger.debug(f"Exception getting description for {family_name}: {e}")
+        return None, None, family_name
+
+
+def _description_results(
+    family_names: list[str],
+    descriptions_cache: dict[str, str] | None = None,
+    max_workers: int = 20,
+) -> Iterator[tuple[int, str, str | None, str | None]]:
+    """Yield module-description results as worker threads complete."""
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_family = {
+            executor.submit(
+                _fetch_module_description,
+                family_name,
+                descriptions_cache,
+            ): family_name
+            for family_name in family_names
+        }
+
+        for completed, future in enumerate(as_completed(future_to_family), 1):
+            family_name = future_to_family[future]
+            try:
+                description, error, _ = future.result()
+                yield completed, family_name, description, error
+            except Exception as e:
+                logger.debug(f"Error processing description for {family_name}: {e}")
+                yield completed, family_name, None, str(e)
+
+
+def _description_events(
+    family_names: list[str],
+    module_name_map: dict[str, str],
+    descriptions_cache: dict[str, str],
+) -> Iterator[dict[str, object]]:
+    """Yield shared progress and update events for description streams."""
+    total_families = len(family_names)
+    failed_count = 0
+    new_descriptions: dict[str, str] = {}
+
+    for completed, family_name, description, error in _description_results(
+        family_names,
+        descriptions_cache,
+    ):
+        if completed % 10 == 0 or completed == total_families:
+            yield {
+                'type': 'progress',
+                'message': f'Loading descriptions: {completed}/{total_families}',
+                'total': total_families,
+                'current': completed,
+            }
+
+        if error is not None:
+            failed_count += 1
+            continue
+
+        if description is None:
+            description = ''
+
+        if description and family_name not in descriptions_cache:
+            new_descriptions[family_name] = description
+
+        yield {
+            'type': 'module_update',
+            'module_name': module_name_map.get(family_name, family_name),
+            'description': description,
+        }
+
+    if failed_count > 0:
+        yield {
+            'type': 'progress',
+            'message': f'Failed to get descriptions for {failed_count} modules',
+            'total': total_families,
+            'current': total_families,
+        }
+
+    if new_descriptions:
+        descriptions_cache.update(new_descriptions)
+        _save_descriptions_cache(descriptions_cache)
+        logger.info(f"Added {len(new_descriptions)} new descriptions to cache")
+
+
+def _sse_event(event: dict[str, object]) -> str:
+    """Serialize one server-sent event payload."""
+    return f"data: {json.dumps(event)}\n\n"
+
+
+def _sse_response(events: Iterator[str]) -> Response:
+    """Return a consistent SSE response for module streaming endpoints."""
+    return Response(
+        events,
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        },
+    )
+
+
 def _get_all_modules_two_stage_streaming():
     """
     Generator that yields modules as they're discovered (for streaming).
@@ -425,130 +576,47 @@ def _get_all_modules_two_stage_streaming():
     families = sorted(modules_dict.keys())
     total_families = len(families)
     
-    yield {'type': 'progress', 'message': f'Found {total_families} module families with versions', 'total': total_families, 'current': 0}
+    yield {
+        'type': 'progress',
+        'message': f'Found {total_families} module families with versions',
+        'total': total_families,
+        'current': 0,
+    }
     
-    # Step 2: Display all modules immediately (without descriptions)
     categories_config = _load_categories()
-    module_name_map = {}  # Map family_name -> base_name for description updates
+    module_name_map = _module_name_map(modules_dict)
     
     for family_name in families:
-        versions = sorted(modules_dict[family_name], key=_natural_sort_key)
-        
-        # Determine base name from first version
-        if versions:
-            first_version = versions[0]
-            if '/' in first_version:
-                parts = first_version.split('/')
-                if len(parts) > 2:
-                    base_name = '/'.join(parts[:-1])
-                else:
-                    base_name = parts[0]
-            else:
-                base_name = family_name
-        else:
-            base_name = family_name
-        
-        # Store mapping for description updates
-        module_name_map[family_name] = base_name
-        
-        category = _categorize_module(base_name, categories_config)
-        
-        # Yield module immediately without description
-        grouped_module = {
-            'name': base_name,
-            'versions': versions,
-            'description': '',  # Empty initially
-            'category': category
+        yield {
+            'type': 'module',
+            'module': _module_record(
+                family_name,
+                modules_dict[family_name],
+                categories_config,
+            ),
         }
-        yield {'type': 'module', 'module': grouped_module}
     
     yield {'type': 'descriptions_start', 'message': 'Loading descriptions...'}
-    yield {'type': 'progress', 'message': f'Displayed {total_families} modules, loading descriptions...', 'total': total_families, 'current': 0}
+    yield {
+        'type': 'progress',
+        'message': f'Displayed {total_families} modules, loading descriptions...',
+        'total': total_families,
+        'current': 0,
+    }
     
-    # Step 3: Fetch descriptions in background and update modules
-    # Load descriptions cache
     descriptions_cache = _load_descriptions_cache()
-    failed_count = 0
-    max_workers = 20  # Reduced from 100 to prevent overwhelming system
-    completed = 0
-    new_descriptions = {}  # Track new descriptions to save to cache
-    
-    def fetch_description(family_name):
-        """Fetch description for a single module family, using cache if available."""
-        # Check cache first
-        if family_name in descriptions_cache:
-            cached_desc = descriptions_cache[family_name]
-            logger.debug(f"Using cached description for {family_name}")
-            return cached_desc, None, family_name
-        
-        # Not in cache - fetch it
-        try:
-            details, error = _get_module_details(family_name)
-            if error is not None:
-                # Don't log timeouts as warnings - they're expected for some modules
-                if "timed out" not in error.lower():
-                    logger.debug(f"Module {family_name} error: {error}")
-                return None, None, family_name  # Skip silently
-            if details is None:
-                return None, None, family_name  # Skipped
-            description = details.get('description', '')
-            # Store in new_descriptions to save to cache later
-            if description:
-                new_descriptions[family_name] = description
-            return description, None, family_name
-        except Exception as e:
-            logger.debug(f"Exception getting description for {family_name}: {e}")
-            return None, None, family_name  # Skip silently
-    
-    # Use ThreadPoolExecutor for parallel processing of descriptions
-    # Submit all tasks at once with 100 workers
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks at once
-        future_to_family = {executor.submit(fetch_description, family_name): family_name 
-                           for family_name in families}
-        
-        # Process completed tasks as they finish
-        for future in as_completed(future_to_family):
-            family_name = future_to_family[future]
-            completed += 1
-            
-            # Yield progress update less frequently to avoid overwhelming
-            if completed % 10 == 0 or completed == total_families:
-                yield {'type': 'progress', 'message': f'Loading descriptions: {completed}/{total_families}', 'total': total_families, 'current': completed}
-            
-            try:
-                description, error, _ = future.result()
-                
-                # Skip modules with errors (timeouts, etc.) - don't log as warnings
-                if error is not None:
-                    failed_count += 1
-                    continue
-                
-                if description is None:
-                    description = ''  # Use empty string if skipped
-                
-                # Get base name from the map we created earlier
-                base_name = module_name_map.get(family_name, family_name)
-                
-                # Yield description update immediately
-                yield {'type': 'module_update', 'module_name': base_name, 'description': description}
-            except Exception as e:
-                logger.debug(f"Error processing description for {family_name}: {e}")
-                failed_count += 1
-    
-    if failed_count > 0:
-        yield {'type': 'progress', 'message': f'Failed to get descriptions for {failed_count} modules', 'total': total_families, 'current': total_families}
-    
-    # Save new descriptions to cache
-    if new_descriptions:
-        # Merge with existing cache
-        descriptions_cache.update(new_descriptions)
-        _save_descriptions_cache(descriptions_cache)
-        logger.info(f"Added {len(new_descriptions)} new descriptions to cache")
+    yield from _description_events(families, module_name_map, descriptions_cache)
     
     yield {'type': 'descriptions_complete', 'message': 'All descriptions loaded'}
     total_versions = sum(len(versions) for versions in modules_dict.values())
-    yield {'type': 'complete', 'message': f'Retrieved {total_versions} module versions across {len(modules_dict)} modules', 'total_modules': len(modules_dict)}
+    yield {
+        'type': 'complete',
+        'message': (
+            f'Retrieved {total_versions} module versions across '
+            f'{len(modules_dict)} modules'
+        ),
+        'total_modules': len(modules_dict),
+    }
 
 
 def _get_all_modules_two_stage() -> Tuple[Optional[Dict[str, Dict[str, Any]]], Optional[str]]:
@@ -721,34 +789,15 @@ def _group_modules_by_name(modules_data: Dict[str, Dict[str, Any]]):
         
         if not versions:
             continue
-            
-        # Determine base name from first version
-            # For hierarchical modules like 'rc/3DSlicer/5.2.2',
-            # base name is everything except the last segment
-            # For simple modules like 'Armadillo/11.4.3', base is first segment
-        first_version = versions[0]
-        if '/' in first_version:
-            parts = first_version.split('/')
-            if len(parts) > 2:
-                # Hierarchical: rc/3DSlicer/5.2.2 -> base = rc/3DSlicer
-                base_name = '/'.join(parts[:-1])
-            else:
-                # Simple: Armadillo/11.4.3 -> base = Armadillo
-                base_name = parts[0]
-        else:
-            base_name = family_name
-        
-        category = _categorize_module(base_name, categories_config)
-        
-        # Sort versions using natural (numeric-aware) sorting
-        sorted_versions = sorted(versions, key=_natural_sort_key) if versions else []
-        
-        result.append({
-            'name': base_name,
-            'versions': sorted_versions,
-            'description': description,
-            'category': category
-        })
+
+        result.append(
+            _module_record(
+                family_name,
+                versions,
+                categories_config,
+                description,
+            )
+        )
     
     # Sort all modules alphabetically by name (case-insensitive)
     result.sort(key=lambda m: m['name'].lower())
@@ -774,6 +823,23 @@ def _clear_modules_cache():
     _modules_cache_timestamp = None
 
 
+def _modules_by_category(
+    grouped_modules: list[dict[str, object]],
+) -> tuple[dict[str, list[dict[str, object]]], list[str]]:
+    """Group cached modules for shared template and JSON responses."""
+    modules_by_category: dict[str, list[dict[str, object]]] = {}
+    for module in grouped_modules:
+        category = str(module['category'])
+        modules_by_category.setdefault(category, []).append(module)
+
+    category_order = sorted(modules_by_category.keys())
+    if 'Misc' in category_order:
+        category_order.remove('Misc')
+        category_order.append('Misc')
+
+    return modules_by_category, category_order
+
+
 @modules_bp.app_template_filter('timestamp_to_datetime')
 def timestamp_to_datetime_filter(timestamp: Optional[float]) -> str:
     """Convert Unix timestamp to formatted datetime string."""
@@ -786,30 +852,13 @@ def timestamp_to_datetime_filter(timestamp: Optional[float]) -> str:
         return 'Unknown'
 
 
-# Route for the modules page
 @modules_bp.route('/')
 def modules():
     """Render the modules page."""
-    # Get cached modules
     grouped_modules = _get_cached_modules()
     unique_count = len(grouped_modules)
     cache_exists = _modules_cache is not None and len(grouped_modules) > 0
-    
-    # Group modules by category for display
-    modules_by_category = {}
-    for module in grouped_modules:
-        cat = module['category']
-        if cat not in modules_by_category:
-            modules_by_category[cat] = []
-        modules_by_category[cat].append(module)
-    
-    # Get category order (sorted, with Misc last)
-    category_order = sorted(modules_by_category.keys())
-    if 'Misc' in category_order:
-        category_order.remove('Misc')
-        category_order.append('Misc')
-    
-    # Get cache timestamp
+    modules_by_category, category_order = _modules_by_category(grouped_modules)
     cache_timestamp = _modules_cache_timestamp if _modules_cache_timestamp else None
     
     return render_template(
@@ -827,25 +876,12 @@ def modules_list():
     """Return JSON list of modules from cache."""
     grouped_modules = _get_cached_modules()
     unique_count = len(grouped_modules)
-    
-    # Group by category for frontend
-    modules_by_category = {}
-    for module in grouped_modules:
-        cat = module['category']
-        if cat not in modules_by_category:
-            modules_by_category[cat] = []
-        modules_by_category[cat].append(module)
-    
-    # Get category order (sorted, with Misc last)
-    category_order = sorted(modules_by_category.keys())
-    if 'Misc' in category_order:
-        category_order.remove('Misc')
-        category_order.append('Misc')
+    modules_by_category, category_order = _modules_by_category(grouped_modules)
     
     return jsonify({
-            'modules': grouped_modules,
-            'modules_by_category': modules_by_category,
-            'category_order': category_order,
+        'modules': grouped_modules,
+        'modules_by_category': modules_by_category,
+        'category_order': category_order,
         'unique_count': unique_count,
         'loading': False
     })
@@ -886,9 +922,6 @@ def descriptions_update():
         # Build mapping of base_name -> description
         # We need to map from module family names to base names
         base_name_to_description = {}
-        
-        # Parse module_categories.json to get family name mappings
-        categories_config = _load_categories()
         
         # For each module, try to find its description
         # Module names in the cache are base names (e.g., "zlib"), but descriptions are keyed by family names
@@ -957,35 +990,29 @@ def refresh_modules():
     """Stream fresh module data via SSE (GET endpoint for EventSource)."""
     global _streaming_in_progress
     
-    def generate():
+    def generate() -> Iterator[str]:
         global _streaming_in_progress
         try:
             all_modules = []
             for event in _get_all_modules_two_stage_streaming():
                 if event['type'] == 'module':
                     all_modules.append(event['module'])
-                    # Send module to client
-                    yield f"data: {json.dumps(event)}\n\n"
-                elif event['type'] == 'progress':
-                    # Send progress update
-                    yield f"data: {json.dumps(event)}\n\n"
+                    yield _sse_event(event)
                 elif event['type'] == 'complete':
-                    # Update cache with all collected modules
                     global _modules_cache, _modules_cache_timestamp
-                    _modules_cache = sorted(all_modules, key=lambda m: m['name'].lower())
+                    _modules_cache = sorted(
+                        all_modules,
+                        key=lambda m: m['name'].lower(),
+                    )
                     _modules_cache_timestamp = time.time()
-                    # Send completion
-                    yield f"data: {json.dumps(event)}\n\n"
-                elif event['type'] == 'error':
-                    yield f"data: {json.dumps(event)}\n\n"
+                    yield _sse_event(event)
+                elif event['type'] in {'progress', 'error'}:
+                    yield _sse_event(event)
         finally:
             with _streaming_lock:
                 _streaming_in_progress = False
     
-    return Response(generate(), mimetype='text/event-stream', headers={
-        'Cache-Control': 'no-cache',
-        'X-Accel-Buffering': 'no'
-    })
+    return _sse_response(generate())
 
 
 @modules_bp.route('/descriptions-stream')
@@ -995,126 +1022,60 @@ def stream_descriptions():
     Only fetches new descriptions and appends them to the static cache."""
     global _streaming_in_progress
     
-    def generate():
+    def generate() -> Iterator[str]:
         global _streaming_in_progress
         try:
-            # Get ALL module families from module -t spider (not just cached ones)
-            # This ensures we check all families against cache and only fetch new ones
-            yield f"data: {json.dumps({'type': 'progress', 'message': 'Fetching all module families...', 'total': 0, 'current': 0})}\n\n"
+            yield _sse_event({
+                'type': 'progress',
+                'message': 'Fetching all module families...',
+                'total': 0,
+                'current': 0,
+            })
             
             output, error = _call_module_command('module -t spider', timeout=60)
             if error:
-                yield f"data: {json.dumps({'type': 'error', 'message': f'Failed to get module list: {error}'})}\n\n"
+                yield _sse_event({
+                    'type': 'error',
+                    'message': f'Failed to get module list: {error}',
+                })
                 return
             
             if not output or not output.strip():
-                yield f"data: {json.dumps({'type': 'error', 'message': 'module -t spider returned empty output'})}\n\n"
+                yield _sse_event({
+                    'type': 'error',
+                    'message': 'module -t spider returned empty output',
+                })
                 return
             
-            # Parse all modules to get ALL families
             modules_dict = _parse_module_spider_output(output)
             all_families = sorted(modules_dict.keys())
-            
-            # Build module name map from parsed data (same logic as in _get_all_modules_two_stage_streaming)
-            module_name_map = {}
-            categories_config = _load_categories()
-            for family_name in all_families:
-                versions = sorted(modules_dict[family_name], key=_natural_sort_key)
-                if versions:
-                    first_version = versions[0]
-                    if '/' in first_version:
-                        parts = first_version.split('/')
-                        if len(parts) > 2:
-                            base_name = '/'.join(parts[:-1])
-                        else:
-                            base_name = parts[0]
-                    else:
-                        base_name = family_name
-                else:
-                    base_name = family_name
-                module_name_map[family_name] = base_name
-            
             total_families = len(all_families)
-            yield f"data: {json.dumps({'type': 'descriptions_start', 'message': f'Loading descriptions for {total_families} module families...'})}\n\n"
+            yield _sse_event({
+                'type': 'descriptions_start',
+                'message': (
+                    f'Loading descriptions for {total_families} module families...'
+                ),
+            })
             
-            # Load descriptions cache
+            module_name_map = _module_name_map(modules_dict)
             descriptions_cache = _load_descriptions_cache()
-            # Fetch descriptions in parallel
-            max_workers = 20  # Reduced to prevent overwhelming system
-            completed = 0
-            failed_count = 0
-            new_descriptions = {}  # Track new descriptions to save to cache
+
+            for event in _description_events(
+                all_families,
+                module_name_map,
+                descriptions_cache,
+            ):
+                yield _sse_event(event)
             
-            def fetch_description(family_name):
-                """Fetch description for a single module family, using cache if available."""
-                # Check cache first
-                if family_name in descriptions_cache:
-                    cached_desc = descriptions_cache[family_name]
-                    logger.debug(f"Using cached description for {family_name}")
-                    return cached_desc, None, family_name
-                
-                # Not in cache - fetch it
-                try:
-                    details, error = _get_module_details(family_name)
-                    if error is not None:
-                        # Don't log timeouts - they're expected for some modules
-                        if "timed out" not in error.lower():
-                            logger.debug(f"Module {family_name} error: {error}")
-                        return None, None, family_name  # Skip silently
-                    if details is None:
-                        return None, None, family_name
-                    description = details.get('description', '')
-                    # Store in new_descriptions to save to cache later
-                    if description:
-                        new_descriptions[family_name] = description
-                    return description, None, family_name
-                except Exception as e:
-                    logger.debug(f"Exception getting description for {family_name}: {e}")
-                    return None, None, family_name  # Skip silently
-            
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_family = {executor.submit(fetch_description, family_name): family_name 
-                                   for family_name in all_families}
-                
-                for future in as_completed(future_to_family):
-                    family_name = future_to_family[future]
-                    completed += 1
-                    
-                    if completed % 10 == 0 or completed == total_families:
-                        yield f"data: {json.dumps({'type': 'progress', 'message': f'Loading descriptions: {completed}/{total_families}', 'total': total_families, 'current': completed})}\n\n"
-                    
-                    try:
-                        description, error, _ = future.result()
-                        
-                        if error is not None and error.startswith('Error:'):
-                            failed_count += 1
-                            continue
-                        
-                        if description is None:
-                            description = ''
-                        
-                        base_name = module_name_map.get(family_name, family_name)
-                        yield f"data: {json.dumps({'type': 'module_update', 'module_name': base_name, 'description': description})}\n\n"
-                    except Exception as e:
-                        logger.error(f"Error processing description for {family_name}: {e}", exc_info=True)
-                        failed_count += 1
-            
-            # Save new descriptions to cache
-            if new_descriptions:
-                # Merge with existing cache
-                descriptions_cache.update(new_descriptions)
-                _save_descriptions_cache(descriptions_cache)
-                logger.info(f"Added {len(new_descriptions)} new descriptions to cache")
-            
-            yield f"data: {json.dumps({'type': 'descriptions_complete', 'message': 'All descriptions loaded'})}\n\n"
+            yield _sse_event({
+                'type': 'descriptions_complete',
+                'message': 'All descriptions loaded',
+            })
         finally:
             with _streaming_lock:
                 _streaming_in_progress = False
     
-    return Response(generate(), mimetype='text/event-stream', headers={
-        'Cache-Control': 'no-cache',
-        'X-Accel-Buffering': 'no'
-    })
+    return _sse_response(generate())
 
 
 @modules_bp.route('/refresh-status')
@@ -1150,44 +1111,25 @@ def _preload_modules_cache():
         
         logger.info(f"Preloaded {total_families} module families from module -t spider")
         
-        # Create basic module list (without descriptions - those load on demand)
         categories_config = _load_categories()
-        grouped_modules = []
-        
-        for family_name in families:
-            versions = sorted(modules_dict[family_name], key=_natural_sort_key)
-            
-            # Determine base name from first version
-            if versions:
-                first_version = versions[0]
-                if '/' in first_version:
-                    parts = first_version.split('/')
-                    if len(parts) > 2:
-                        base_name = '/'.join(parts[:-1])
-                    else:
-                        base_name = parts[0]
-                else:
-                    base_name = family_name
-            else:
-                base_name = family_name
-            
-            category = _categorize_module(base_name, categories_config)
-            
-            grouped_modules.append({
-                'name': base_name,
-                'versions': versions,
-                'description': '',  # Descriptions load on demand
-                'category': category
-            })
-        
-        # Sort alphabetically
+        grouped_modules = [
+            _module_record(
+                family_name,
+                modules_dict[family_name],
+                categories_config,
+            )
+            for family_name in families
+        ]
         grouped_modules.sort(key=lambda m: m['name'].lower())
-        
-        # Update cache
+
         _modules_cache = grouped_modules
         _modules_cache_timestamp = time.time()
         
-        logger.info(f"Modules cache preloaded successfully: {len(grouped_modules)} modules, {sum(len(m['versions']) for m in grouped_modules)} total versions")
+        total_versions = sum(len(m['versions']) for m in grouped_modules)
+        logger.info(
+            "Modules cache preloaded successfully: "
+            f"{len(grouped_modules)} modules, {total_versions} total versions"
+        )
         
     except Exception as e:
         logger.error(f"Error preloading modules cache: {e}", exc_info=True)
@@ -1216,7 +1158,10 @@ def _preload_module_descriptions():
         all_families = sorted(modules_dict.keys())
         total_families = len(all_families)
         
-        logger.info(f"Found {total_families} module families, checking for missing descriptions...")
+        logger.info(
+            f"Found {total_families} module families, "
+            "checking for missing descriptions..."
+        )
         
         # Load existing descriptions cache
         descriptions_cache = _load_descriptions_cache()
@@ -1228,71 +1173,49 @@ def _preload_module_descriptions():
             logger.info("All module descriptions already cached")
             return
         
-        logger.info(f"Fetching descriptions for {len(missing_families)} new module families...")
+        logger.info(
+            f"Fetching descriptions for {len(missing_families)} "
+            "new module families..."
+        )
         
-        # Fetch descriptions in parallel
-        max_workers = 20
         new_descriptions = {}
-        completed = 0
         failed_count = 0
-        
-        def fetch_description(family_name):
-            """Fetch description for a single module family."""
-            try:
-                details, error = _get_module_details(family_name)
-                if error is not None:
-                    if "timed out" not in error.lower():
-                        logger.debug(f"Module {family_name} error: {error}")
-                    return None, None, family_name
-                if details is None:
-                    return None, None, family_name
-                description = details.get('description', '')
-                if description:
-                    return description, None, family_name
-                return '', None, family_name
-            except Exception as e:
-                logger.debug(f"Exception getting description for {family_name}: {e}")
-                return None, None, family_name
-        
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_family = {executor.submit(fetch_description, family_name): family_name 
-                               for family_name in missing_families}
-            
-            for future in as_completed(future_to_family):
-                family_name = future_to_family[future]
-                completed += 1
-                
-                try:
-                    description, error, _ = future.result()
-                    if error is not None:
-                        failed_count += 1
-                        # Store empty string to mark as processed (even if failed)
-                        new_descriptions[family_name] = ''
-                    elif description is not None:
-                        # Store description (could be empty string or actual description)
-                        new_descriptions[family_name] = description
-                    else:
-                        # None means error occurred, mark as processed with empty string
-                        new_descriptions[family_name] = ''
-                        failed_count += 1
-                except Exception as e:
-                    logger.debug(f"Error processing description for {family_name}: {e}")
-                    new_descriptions[family_name] = ''  # Mark as processed
-                    failed_count += 1
-                
-                # Save incrementally every 50 items or at completion
-                if completed % 50 == 0 or completed == len(missing_families):
-                    if new_descriptions:
-                        # Save what we have so far
-                        _save_descriptions_cache(new_descriptions)
-                        logger.info(f"Preloaded descriptions: {completed}/{len(missing_families)} ({len(new_descriptions)} saved so far, {failed_count} failed)")
-                    else:
-                        logger.info(f"Preloaded descriptions: {completed}/{len(missing_families)} ({failed_count} failed)")
+
+        for completed, family_name, description, error in _description_results(
+            missing_families,
+        ):
+            if error is not None:
+                failed_count += 1
+                new_descriptions[family_name] = ''
+            elif description is not None:
+                new_descriptions[family_name] = description
+            else:
+                new_descriptions[family_name] = ''
+                failed_count += 1
+
+            if completed % 50 == 0 or completed == len(missing_families):
+                if new_descriptions:
+                    _save_descriptions_cache(new_descriptions)
+                    logger.info(
+                        "Preloaded descriptions: "
+                        f"{completed}/{len(missing_families)} "
+                        f"({len(new_descriptions)} saved so far, "
+                        f"{failed_count} failed)"
+                    )
+                else:
+                    logger.info(
+                        "Preloaded descriptions: "
+                        f"{completed}/{len(missing_families)} "
+                        f"({failed_count} failed)"
+                    )
         
         # Final save (in case there were fewer than 50 items)
         if new_descriptions:
             _save_descriptions_cache(new_descriptions)
-            logger.info(f"Preloaded {len(new_descriptions)} new descriptions to module_categories.json ({failed_count} failed)")
+            logger.info(
+                f"Preloaded {len(new_descriptions)} new descriptions to "
+                f"module_categories.json ({failed_count} failed)"
+            )
         else:
             logger.info(f"No new descriptions to save ({failed_count} failed)")
         

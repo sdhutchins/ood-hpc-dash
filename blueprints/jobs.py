@@ -1,4 +1,3 @@
-# Standard library imports
 import json
 import logging
 import os
@@ -10,10 +9,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# Third-party imports
 from flask import Blueprint, jsonify, render_template, request
 
-# Local imports
 from utils import find_binary
 
 jobs_bp = Blueprint('jobs', __name__, url_prefix='/jobs')
@@ -24,7 +21,6 @@ SLURM_LOAD_FILE = Path('logs/slurm_load.txt')
 PARTITION_METADATA_FILE = Path('config/partition_metadata.json')
 SEFF_CACHE_FILE = Path('logs/seff_cache.json')
 
-# Common absolute paths for SLURM binaries
 SINFO_PATHS = [
     '/cm/shared/apps/slurm/18.08.9/bin/sinfo',
     '/usr/bin/sinfo',
@@ -49,10 +45,6 @@ SEFF_PATHS = [
     '/opt/slurm/bin/seff',
     '/usr/local/bin/seff',
 ]
-
-
-
-
 def _call_sinfo() -> Tuple[Optional[str], Optional[str]]:
     """
     Call sinfo -s with absolute path and explicit environment.

@@ -2,7 +2,6 @@ from pathlib import Path
 
 from flask import Blueprint, render_template
 
-# Local imports
 from utils import expand_path, load_settings
 
 envs_bp = Blueprint('envs', __name__, url_prefix='/envs')
