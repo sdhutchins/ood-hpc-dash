@@ -219,3 +219,5 @@ __marimo__/
 logs/
 
 bin/
+
+fake_data/
