@@ -6,7 +6,6 @@ import subprocess
 import threading
 import time
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,8 +17,8 @@ from utils import find_binary
 modules_bp = Blueprint('modules', __name__, url_prefix='/modules')
 logger = logging.getLogger(__name__)
 
-MODULES_FILE = Path('logs/modules.txt')
 CATEGORIES_FILE = Path('config/module_categories.json')
+MODULE_SPIDER_COMMAND = 'module --redirect spider'
 
 _modules_cache: Optional[List[Dict[str, Any]]] = None
 _modules_cache_timestamp: Optional[float] = None
@@ -40,7 +39,7 @@ def _call_module_command(command: str, timeout: int = 30) -> Tuple[Optional[str]
     Since module is a shell function, we must use a login shell and source lmod init.
     
     Args:
-        command: Module command to run (e.g., 'module -t spider' or 'module --redirect spider zlib')
+        command: Module command to run (e.g., 'module --redirect spider')
         timeout: Timeout in seconds
     
     Returns:
@@ -88,7 +87,7 @@ def _call_module_command(command: str, timeout: int = 30) -> Tuple[Optional[str]
             cwd=Path.cwd(),
         )
         if result.returncode == 0:
-            # Some module commands output to stderr instead of stdout (e.g., module -t spider)
+            # Some module commands output to stderr instead of stdout.
             # Check both streams
             output = result.stdout.strip()
             if not output and result.stderr:
@@ -177,134 +176,111 @@ def _save_descriptions_cache(cache: Dict[str, str]) -> None:
         logger.warning(f"Error saving descriptions to module_categories.json: {e}")
 
 
-def _get_module_details(module_name: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """
-    Step 2: Get full details for a specific module using 'module --redirect spider <name>'.
-    
-    Args:
-        module_name: Module family name (e.g., 'zlib', 'python')
-    
-    Returns:
-        Tuple of (dict with 'versions' list and 'description' string, error_message)
-        Returns (None, None) if module has no output (skip it, not an error)
-    """
-    output, error = _call_module_command(f'module --redirect spider {module_name}', timeout=5)
-    if error:
-        # For individual modules, empty output is not fatal - just skip it
-        if "empty output" in error.lower():
-            logger.debug(f"Module {module_name} returned empty output - skipping")
-            return None, None
-        # Other errors (timeout, etc.) are logged but we continue
-        logger.debug(f"Module {module_name} error: {error}")
-        return None, None
-    
-    if not output or not output.strip():
-        logger.debug(f"Module {module_name} has no output - skipping")
-        return None, None
-    
-    # Parse the detailed output
-    versions = []
-    description_lines = []
-    in_versions_section = False
-    in_description_section = False
-    
-    lines = output.split('\n')
-    for i, line in enumerate(lines):
-        line_stripped = line.strip()
-        
-        # Skip separator lines
-        if line_stripped.startswith('---'):
-            continue
-        
-        # Skip empty lines (but allow them within description)
-        if not line_stripped and not in_description_section:
-            continue
-        
-        # Check for module name line (e.g., "zlib:")
-        if line_stripped.endswith(':') and '/' not in line_stripped and 'Versions' not in line_stripped and 'Description' not in line_stripped and 'Dependencies' not in line_stripped:
-            in_versions_section = False
-            in_description_section = False
-            continue
-        
-        # Check for Versions section
-        if 'Versions:' in line_stripped:
-            in_versions_section = True
-            in_description_section = False
-            continue
-        
-        # Check for Description section
-        if 'Description:' in line_stripped:
-            in_versions_section = False
-            in_description_section = True
-            # Description text may be on the same line after "Description:"
-            desc_part = line_stripped.split('Description:', 1)
-            if len(desc_part) > 1 and desc_part[1].strip():
-                description_lines.append(desc_part[1].strip())
-            continue
-        
-        # Check for Dependencies section (end of description)
-        if 'Dependencies:' in line_stripped:
-            in_description_section = False
-            in_versions_section = False
-            continue
-        
-        # Collect versions (they appear indented after "Versions:")
-        if in_versions_section and line_stripped:
-            # Versions are listed as "module/version" - check if it looks like a version line
-            if '/' in line_stripped and not line_stripped.startswith('(') and ':' not in line_stripped:
-                # This looks like a version entry
-                versions.append(line_stripped)
-        
-        # Collect description (all lines between "Description:" and "Dependencies:")
-        if in_description_section and line_stripped:
-            # Include all text until we hit Dependencies
-            description_lines.append(line_stripped)
-    
-    description = ' '.join(description_lines).strip() if description_lines else ''
-    
-    # Debug logging for first few modules to troubleshoot
-    if module_name in ['zlib', 'python', 'gcc'] and not description:
-        logger.warning(f"Module {module_name}: No description found. Versions: {len(versions)}. Output preview:\n{output[:1000]}")
-    
-    return {
-        'versions': versions,
-        'description': description
-    }, None
+def _new_module_entry() -> dict[str, object]:
+    """Return the internal record used while parsing spider output."""
+    return {'versions': [], 'description': ''}
 
 
-def _parse_module_spider_output(output: str) -> Dict[str, List[str]]:
-    """
-    Parse 'module -t spider' output to extract all modules with versions.
-    
-    Returns:
-        Dict mapping module family names to lists of full module/version strings
-    """
-    modules_dict = {}
-    for line in output.split('\n'):
-        line = line.strip()
-        # Skip empty lines and lines ending with '/' (directories)
-        if not line or line.endswith('/'):
+def _add_versions(module_entry: dict[str, object], version_text: str) -> None:
+    """Append module versions parsed from a comma-separated spider line."""
+    versions = module_entry['versions']
+    if not isinstance(versions, list):
+        return
+
+    for token in version_text.split(','):
+        version = token.strip()
+        if not version or version == '...' or version.endswith('...'):
             continue
-        
-        # If line contains '/', it's a full module/version
-        if '/' in line:
-            parts = line.split('/')
-            if len(parts) >= 2:
-                # Determine family name
-                if len(parts) > 2:
-                    family_name = '/'.join(parts[:-1])
-                else:
-                    family_name = parts[0]
-                
-                if family_name not in modules_dict:
-                    modules_dict[family_name] = []
-                modules_dict[family_name].append(line)
-        else:
-            # No '/', treat as family name with no versions yet
-            if line not in modules_dict:
-                modules_dict[line] = []
-    
-    return modules_dict
+        if '/' in version:
+            versions.append(version)
+
+
+def _set_description(
+    module_entry: dict[str, object],
+    description_lines: list[str],
+) -> None:
+    """Store normalized description text for one parsed module."""
+    description = ' '.join(description_lines).strip()
+    if description:
+        module_entry['description'] = description
+
+
+def _parse_module_spider_output(output: str) -> dict[str, dict[str, object]]:
+    """
+    Parse cache-backed `module --redirect spider` output.
+
+    The normal spider output carries module families, versions, and short
+    descriptions. Reading that single command lets Lmod use its spider cache
+    instead of forcing this app to issue one detail command per module.
+    """
+    modules: dict[str, dict[str, object]] = {}
+    current_family: str | None = None
+    description_lines: list[str] = []
+    parser_state: str | None = None
+
+    for raw_line in output.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith('---'):
+            continue
+
+        indent = len(line) - len(line.lstrip())
+        entry_match = re.match(r'^\s{2}([^:\s][^:]*?):\s*(.*)$', line)
+        if entry_match and 'The following' not in stripped:
+            if current_family is not None:
+                _set_description(modules[current_family], description_lines)
+
+            current_family = entry_match.group(1).strip()
+            modules.setdefault(current_family, _new_module_entry())
+            _add_versions(modules[current_family], entry_match.group(2))
+            description_lines = []
+            parser_state = 'description'
+            continue
+
+        if current_family is None:
+            continue
+
+        if stripped.startswith('Description:'):
+            parser_state = 'description'
+            description = stripped.split('Description:', 1)[1].strip()
+            if description:
+                description_lines.append(description)
+            continue
+
+        if stripped == 'Versions:':
+            parser_state = 'versions'
+            continue
+
+        if stripped.startswith((
+            'Other possible modules',
+            'You will need',
+            'Help:',
+            'Names marked',
+        )):
+            parser_state = None
+            continue
+
+        if parser_state == 'versions':
+            _add_versions(modules[current_family], stripped)
+            continue
+
+        if parser_state == 'description' and indent >= 4:
+            description_lines.append(stripped)
+
+    if current_family is not None:
+        _set_description(modules[current_family], description_lines)
+
+    for family_name, module_entry in modules.items():
+        versions = module_entry['versions']
+        if isinstance(versions, list):
+            module_entry['versions'] = sorted(
+                set(versions),
+                key=_natural_sort_key,
+            )
+        if not module_entry.get('description'):
+            module_entry['description'] = ''
+
+    return modules
 
 
 def _module_base_name(family_name: str, versions: list[str]) -> str:
@@ -320,26 +296,22 @@ def _module_base_name(family_name: str, versions: list[str]) -> str:
     return family_name
 
 
-def _module_name_map(modules_dict: dict[str, list[str]]) -> dict[str, str]:
-    """Map Lmod family names to the display names used by the frontend."""
-    return {
-        family_name: _module_base_name(
-            family_name,
-            sorted(versions, key=_natural_sort_key),
-        )
-        for family_name, versions in modules_dict.items()
-    }
-
-
 def _module_record(
     family_name: str,
-    versions: list[str],
+    module_entry: dict[str, object],
     categories_config: dict[str, str] | None,
-    description: str = '',
+    descriptions_cache: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Build the module payload used by templates, JSON, and SSE events."""
+    raw_versions = module_entry.get('versions', [])
+    versions = raw_versions if isinstance(raw_versions, list) else []
     sorted_versions = sorted(versions, key=_natural_sort_key)
     base_name = _module_base_name(family_name, sorted_versions)
+    description = module_entry.get('description')
+    if not isinstance(description, str):
+        description = ''
+    if descriptions_cache and not description:
+        description = descriptions_cache.get(family_name, '')
 
     return {
         'name': base_name,
@@ -347,107 +319,6 @@ def _module_record(
         'description': description,
         'category': _categorize_module(base_name, categories_config),
     }
-
-
-def _fetch_module_description(
-    family_name: str,
-    descriptions_cache: dict[str, str] | None = None,
-) -> tuple[str | None, str | None, str]:
-    """Fetch one module description while treating slow Lmod modules as skips."""
-    if descriptions_cache and family_name in descriptions_cache:
-        logger.debug(f"Using cached description for {family_name}")
-        return descriptions_cache[family_name], None, family_name
-
-    try:
-        details, error = _get_module_details(family_name)
-        if error is not None:
-            if "timed out" not in error.lower():
-                logger.debug(f"Module {family_name} error: {error}")
-            return None, None, family_name
-        if details is None:
-            return None, None, family_name
-        return details.get('description', ''), None, family_name
-    except Exception as e:
-        logger.debug(f"Exception getting description for {family_name}: {e}")
-        return None, None, family_name
-
-
-def _description_results(
-    family_names: list[str],
-    descriptions_cache: dict[str, str] | None = None,
-    max_workers: int = 20,
-) -> Iterator[tuple[int, str, str | None, str | None]]:
-    """Yield module-description results as worker threads complete."""
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_family = {
-            executor.submit(
-                _fetch_module_description,
-                family_name,
-                descriptions_cache,
-            ): family_name
-            for family_name in family_names
-        }
-
-        for completed, future in enumerate(as_completed(future_to_family), 1):
-            family_name = future_to_family[future]
-            try:
-                description, error, _ = future.result()
-                yield completed, family_name, description, error
-            except Exception as e:
-                logger.debug(f"Error processing description for {family_name}: {e}")
-                yield completed, family_name, None, str(e)
-
-
-def _description_events(
-    family_names: list[str],
-    module_name_map: dict[str, str],
-    descriptions_cache: dict[str, str],
-) -> Iterator[dict[str, object]]:
-    """Yield shared progress and update events for description streams."""
-    total_families = len(family_names)
-    failed_count = 0
-    new_descriptions: dict[str, str] = {}
-
-    for completed, family_name, description, error in _description_results(
-        family_names,
-        descriptions_cache,
-    ):
-        if completed % 10 == 0 or completed == total_families:
-            yield {
-                'type': 'progress',
-                'message': f'Loading descriptions: {completed}/{total_families}',
-                'total': total_families,
-                'current': completed,
-            }
-
-        if error is not None:
-            failed_count += 1
-            continue
-
-        if description is None:
-            description = ''
-
-        if description and family_name not in descriptions_cache:
-            new_descriptions[family_name] = description
-
-        yield {
-            'type': 'module_update',
-            'module_name': module_name_map.get(family_name, family_name),
-            'description': description,
-        }
-
-    if failed_count > 0:
-        yield {
-            'type': 'progress',
-            'message': f'Failed to get descriptions for {failed_count} modules',
-            'total': total_families,
-            'current': total_families,
-        }
-
-    if new_descriptions:
-        descriptions_cache.update(new_descriptions)
-        _save_descriptions_cache(descriptions_cache)
-        logger.info(f"Added {len(new_descriptions)} new descriptions to cache")
 
 
 def _sse_event(event: dict[str, object]) -> str:
@@ -467,82 +338,121 @@ def _sse_response(events: Iterator[str]) -> Response:
     )
 
 
-def _get_all_modules_two_stage_streaming():
+def _module_records_from_spider_data(
+    modules_dict: dict[str, dict[str, object]],
+) -> list[dict[str, object]]:
+    """Build sorted frontend module records from parsed spider data."""
+    categories_config = _load_categories()
+    descriptions_cache = _load_descriptions_cache()
+    grouped_modules = [
+        _module_record(
+            family_name,
+            modules_dict[family_name],
+            categories_config,
+            descriptions_cache,
+        )
+        for family_name in sorted(modules_dict.keys())
+    ]
+    grouped_modules.sort(key=lambda module: str(module['name']).lower())
+    return grouped_modules
+
+
+def _cache_spider_descriptions(
+    modules_dict: dict[str, dict[str, object]],
+) -> None:
+    """Persist descriptions found in spider output for existing update routes."""
+    parsed_descriptions = {
+        family_name: str(module_entry['description'])
+        for family_name, module_entry in modules_dict.items()
+        if module_entry.get('description')
+    }
+    if not parsed_descriptions:
+        return
+
+    descriptions_cache = _load_descriptions_cache()
+    changed_descriptions = {
+        family_name: description
+        for family_name, description in parsed_descriptions.items()
+        if descriptions_cache.get(family_name) != description
+    }
+    if not changed_descriptions:
+        return
+
+    descriptions_cache.update(changed_descriptions)
+    _save_descriptions_cache(descriptions_cache)
+
+
+def _get_all_modules_streaming() -> Iterator[dict[str, object]]:
     """
-    Generator that yields modules as they're discovered (for streaming).
-    
-    Strategy:
-    1. Get all modules and versions from 'module -t spider' immediately
-    2. Display them in table right away (without descriptions)
-    3. Then fetch descriptions in background and update as they arrive
-    
+    Stream module records parsed from one cache-backed Lmod spider command.
+
     Yields:
-        Dict with 'type' ('progress', 'module', 'module_update', 'complete', 'error') and relevant data
+        Dict with 'type' ('progress', 'module', 'complete', 'error').
     """
-    # Step 1: Get all modules and versions from 'module -t spider'
     try:
-        yield {'type': 'progress', 'message': 'Fetching module list...', 'total': 0, 'current': 0}
+        yield {
+            'type': 'progress',
+            'message': 'Fetching module list from Lmod spider cache...',
+            'total': 0,
+            'current': 0,
+        }
         
-        output, error = _call_module_command('module -t spider', timeout=60)
+        output, error = _call_module_command(MODULE_SPIDER_COMMAND, timeout=60)
         if error:
-            logger.error(f"Error calling module -t spider: {error}")
+            logger.error(f"Error calling {MODULE_SPIDER_COMMAND}: {error}")
             yield {'type': 'error', 'message': f'Failed to get module list: {error}'}
             return
         
         if not output or not output.strip():
-            logger.error("module -t spider returned empty output")
-            yield {'type': 'error', 'message': 'module -t spider returned empty output'}
+            logger.error(f"{MODULE_SPIDER_COMMAND} returned empty output")
+            yield {
+                'type': 'error',
+                'message': f'{MODULE_SPIDER_COMMAND} returned empty output',
+            }
             return
     except Exception as e:
         logger.error(f"Exception getting module list: {e}", exc_info=True)
         yield {'type': 'error', 'message': f'Exception: {str(e)}'}
         return
     
-    # Parse all modules and versions immediately
     modules_dict = _parse_module_spider_output(output)
-    families = sorted(modules_dict.keys())
-    total_families = len(families)
+    grouped_modules = _module_records_from_spider_data(modules_dict)
+    total_modules = len(grouped_modules)
     
     yield {
         'type': 'progress',
-        'message': f'Found {total_families} module families with versions',
-        'total': total_families,
+        'message': f'Found {total_modules} module families',
+        'total': total_modules,
         'current': 0,
     }
-    
-    categories_config = _load_categories()
-    module_name_map = _module_name_map(modules_dict)
-    
-    for family_name in families:
+
+    _cache_spider_descriptions(modules_dict)
+
+    for current, module in enumerate(grouped_modules, 1):
         yield {
             'type': 'module',
-            'module': _module_record(
-                family_name,
-                modules_dict[family_name],
-                categories_config,
-            ),
+            'module': module,
         }
-    
-    yield {'type': 'descriptions_start', 'message': 'Loading descriptions...'}
-    yield {
-        'type': 'progress',
-        'message': f'Displayed {total_families} modules, loading descriptions...',
-        'total': total_families,
-        'current': 0,
-    }
-    
-    descriptions_cache = _load_descriptions_cache()
-    yield from _description_events(families, module_name_map, descriptions_cache)
-    
-    yield {'type': 'descriptions_complete', 'message': 'All descriptions loaded'}
-    total_versions = sum(len(versions) for versions in modules_dict.values())
+        if current % 50 == 0 or current == total_modules:
+            yield {
+                'type': 'progress',
+                'message': f'Displayed {current}/{total_modules} modules',
+                'total': total_modules,
+                'current': current,
+            }
+
+    total_versions = sum(
+        len(module['versions'])
+        for module in grouped_modules
+        if isinstance(module.get('versions'), list)
+    )
     yield {
         'type': 'complete',
         'message': (
             f'Retrieved {total_versions} module versions across '
-            f'{len(modules_dict)} modules'
+            f'{total_modules} modules'
         ),
-        'total_modules': len(modules_dict),
+        'total_modules': total_modules,
     }
 
 
@@ -739,30 +649,23 @@ def descriptions_update():
     """Return updated descriptions from cache for modules on the page."""
     try:
         descriptions_cache = _load_descriptions_cache()
-        
-        # Get all modules from cache to map family names to base names
         grouped_modules = _get_cached_modules()
-        
-        # Build mapping of base_name -> description
-        # We need to map from module family names to base names
-        base_name_to_description = {}
-        
-        # For each module, try to find its description
-        # Module names in the cache are base names (e.g., "zlib"), but descriptions are keyed by family names
-        # We need to reverse-engineer the family name from the base name
+        base_name_to_description: dict[str, str] = {}
+
         for module in grouped_modules:
             base_name = module['name']
-            # Try to find description by checking if base_name matches a family name
-            # or if any family name starts with base_name
-            description = ''
+            description = str(module.get('description') or '')
             for family_name, desc in descriptions_cache.items():
-                # Check if family name matches base name or starts with it
-                if family_name == base_name or family_name.startswith(base_name + '/'):
-                    description = desc
+                if description:
                     break
+                if (
+                    family_name == base_name
+                    or family_name.startswith(f"{base_name}/")
+                ):
+                    description = desc
             
             if description:
-                base_name_to_description[base_name] = description
+                base_name_to_description[str(base_name)] = description
         
         return jsonify({
             'descriptions': base_name_to_description,
@@ -821,7 +724,7 @@ def refresh_modules():
 
         try:
             all_modules = []
-            for event in _get_all_modules_two_stage_streaming():
+            for event in _get_all_modules_streaming():
                 if event['type'] == 'module':
                     all_modules.append(event['module'])
                     yield _sse_event(event)
@@ -844,9 +747,7 @@ def refresh_modules():
 
 @modules_bp.route('/descriptions-stream')
 def stream_descriptions():
-    """Stream descriptions for all module families, using cache when available.
-    Fetches descriptions for ALL families from module -t spider, not just cached ones.
-    Only fetches new descriptions and appends them to the static cache."""
+    """Stream descriptions parsed from cache-backed spider output."""
     global _streaming_in_progress
     
     def generate() -> Iterator[str]:
@@ -865,49 +766,57 @@ def stream_descriptions():
         try:
             yield _sse_event({
                 'type': 'progress',
-                'message': 'Fetching all module families...',
+                'message': 'Fetching module descriptions from Lmod spider cache...',
                 'total': 0,
                 'current': 0,
             })
             
-            output, error = _call_module_command('module -t spider', timeout=60)
+            output, error = _call_module_command(MODULE_SPIDER_COMMAND, timeout=60)
             if error:
                 yield _sse_event({
                     'type': 'error',
-                    'message': f'Failed to get module list: {error}',
+                    'message': f'Failed to get module descriptions: {error}',
                 })
                 return
             
             if not output or not output.strip():
                 yield _sse_event({
                     'type': 'error',
-                    'message': 'module -t spider returned empty output',
+                    'message': f'{MODULE_SPIDER_COMMAND} returned empty output',
                 })
                 return
             
             modules_dict = _parse_module_spider_output(output)
-            all_families = sorted(modules_dict.keys())
-            total_families = len(all_families)
+            grouped_modules = _module_records_from_spider_data(modules_dict)
+            total_modules = len(grouped_modules)
             yield _sse_event({
                 'type': 'descriptions_start',
                 'message': (
-                    f'Loading descriptions for {total_families} module families...'
+                    f'Loading descriptions for {total_modules} module families...'
                 ),
             })
-            
-            module_name_map = _module_name_map(modules_dict)
-            descriptions_cache = _load_descriptions_cache()
 
-            for event in _description_events(
-                all_families,
-                module_name_map,
-                descriptions_cache,
-            ):
-                yield _sse_event(event)
+            _cache_spider_descriptions(modules_dict)
+
+            for current, module in enumerate(grouped_modules, 1):
+                yield _sse_event({
+                    'type': 'module_update',
+                    'module_name': module['name'],
+                    'description': module.get('description', ''),
+                })
+                if current % 50 == 0 or current == total_modules:
+                    yield _sse_event({
+                        'type': 'progress',
+                        'message': (
+                            f'Loaded descriptions for {current}/{total_modules}'
+                        ),
+                        'total': total_modules,
+                        'current': current,
+                    })
             
             yield _sse_event({
                 'type': 'descriptions_complete',
-                'message': 'All descriptions loaded',
+                'message': 'Descriptions loaded from Lmod spider cache',
             })
         finally:
             with _streaming_lock:
@@ -925,40 +834,30 @@ def refresh_status():
 
 def _preload_modules_cache():
     """
-    Preload modules cache on app startup by running module -t spider.
+    Preload modules cache on app startup from cache-backed Lmod spider output.
     This ensures modules are ready immediately when user visits the modules page.
     """
     global _modules_cache, _modules_cache_timestamp
     
     logger.info("Preloading modules cache on startup...")
     try:
-        # Get all modules and versions from module -t spider
-        output, error = _call_module_command('module -t spider', timeout=60)
+        output, error = _call_module_command(MODULE_SPIDER_COMMAND, timeout=60)
         if error:
             logger.warning(f"Failed to preload modules cache: {error}")
             return
         
         if not output or not output.strip():
-            logger.warning("module -t spider returned empty output during preload")
+            logger.warning(f"{MODULE_SPIDER_COMMAND} returned empty output during preload")
             return
         
-        # Parse modules immediately
         modules_dict = _parse_module_spider_output(output)
-        families = sorted(modules_dict.keys())
-        total_families = len(families)
-        
-        logger.info(f"Preloaded {total_families} module families from module -t spider")
-        
-        categories_config = _load_categories()
-        grouped_modules = [
-            _module_record(
-                family_name,
-                modules_dict[family_name],
-                categories_config,
-            )
-            for family_name in families
-        ]
-        grouped_modules.sort(key=lambda m: m['name'].lower())
+        grouped_modules = _module_records_from_spider_data(modules_dict)
+        _cache_spider_descriptions(modules_dict)
+
+        logger.info(
+            f"Preloaded {len(grouped_modules)} module families from "
+            f"{MODULE_SPIDER_COMMAND}"
+        )
 
         _modules_cache = grouped_modules
         _modules_cache_timestamp = time.time()
