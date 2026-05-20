@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import re
-import signal
 import subprocess
 import threading
 import time
@@ -108,78 +107,6 @@ def _call_module_command(command: str, timeout: int = 30) -> Tuple[Optional[str]
         return None, f"module command timed out after {timeout}s"
     except Exception as e:
         return None, f"Error calling module command: {str(e)}"
-
-
-def _get_module_families() -> Tuple[Optional[List[str]], Optional[str]]:
-    """
-    Step 1: Get all module family names using 'module -t spider'.
-    
-    Returns:
-        Tuple of (list of module family names, error_message)
-    """
-    # Try with retry
-    max_retries = 2
-    for attempt in range(max_retries):
-        output, error = _call_module_command('module -t spider', timeout=60)
-        if error:
-            if attempt < max_retries - 1:
-                logger.warning(f"Attempt {attempt + 1} failed: {error}, retrying...")
-                time.sleep(1)  # Brief delay before retry
-                continue
-            logger.error(f"Error calling module -t spider after {max_retries} attempts: {error}")
-            return None, error
-        
-        if not output or not output.strip():
-            if attempt < max_retries - 1:
-                logger.warning(f"Attempt {attempt + 1} returned empty output, retrying...")
-                time.sleep(1)
-                continue
-            logger.error("module -t spider returned empty output after retries")
-            # Try alternative: check if module function exists
-            test_output, test_error = _call_module_command('type module', timeout=5)
-            if test_error:
-                logger.error(f"module function check failed: {test_error}")
-            else:
-                logger.info(f"module function check output: {test_output[:200]}")
-            return None, "module -t spider returned empty output"
-        
-        # Success - break out of retry loop
-        break
-    
-    # Parse output: extract unique family names
-    # module -t spider returns both family names and full module/version names
-    # We need to extract just the family names (base names without versions)
-    families_set = set()
-    for line in output.split('\n'):
-        line = line.strip()
-        # Skip empty lines and lines ending with '/' (these are directories in hierarchical modules)
-        if not line or line.endswith('/'):
-            continue
-        
-        # If line contains '/', it's a full module/version - extract family name
-        if '/' in line:
-            # Extract base name (everything before the last '/')
-            parts = line.split('/')
-            if len(parts) >= 2:
-                # For hierarchical modules like "rc/3DSlicer/5.2.2", family is "rc/3DSlicer"
-                # For simple modules like "ABRA2/2.23-GCC-8.3.0", family is "ABRA2"
-                if len(parts) > 2:
-                    family_name = '/'.join(parts[:-1])
-                else:
-                    family_name = parts[0]
-                families_set.add(family_name)
-        else:
-            # No '/', it's already a family name
-            families_set.add(line)
-    
-    families = sorted(list(families_set))
-    
-    if not families:
-        logger.warning(f"No module families found in output. Output preview: {output[:500]}")
-        return None, "No module families found in output"
-    
-    logger.info(f"Found {len(families)} module families")
-    return families, None
 
 
 def _load_descriptions_cache() -> Dict[str, str]:
@@ -619,73 +546,6 @@ def _get_all_modules_two_stage_streaming():
     }
 
 
-def _get_all_modules_two_stage() -> Tuple[Optional[Dict[str, Dict[str, Any]]], Optional[str]]:
-    """
-    Two-stage Lmod spider crawl to get all modules with all versions and descriptions.
-    
-    Step 1: Get all module family names
-    Step 2: For each family, get all versions and description
-    
-    Returns:
-        Tuple of (dict mapping module names to {'versions': [...], 'description': '...'}, error_message)
-    """
-    # Step 1: Get all module family names
-    families, error = _get_module_families()
-    if error:
-        return None, error
-    
-    if not families:
-        return None, "No module families found"
-    
-    logger.info(f"Found {len(families)} module families, fetching details...")
-    
-    # Step 2: Get details for each module family
-    modules_data = {}
-    failed_count = 0
-    
-    for i, family_name in enumerate(families):
-        if i % 50 == 0:
-            logger.info(f"Processing module {i+1}/{len(families)}: {family_name}")
-        
-        details, error = _get_module_details(family_name)
-        # If error is None, it means we should skip this module (not a fatal error)
-        if error is not None:
-            logger.warning(f"Failed to get details for {family_name}: {error}")
-            failed_count += 1
-            continue
-        
-        # If details is None, module was skipped (empty output, etc.)
-        if details is None:
-            continue
-        
-        if details and details.get('versions'):
-            modules_data[family_name] = {
-                'versions': details['versions'],
-                'description': details.get('description', '')
-            }
-    
-    if failed_count > 0:
-        logger.warning(f"Failed to get details for {failed_count} out of {len(families)} modules")
-    
-    total_versions = sum(len(data['versions']) for data in modules_data.values())
-    logger.info(f"Retrieved {total_versions} module versions across {len(modules_data)} modules")
-    return modules_data, None
-
-
-def _load_modules_from_file():
-    """Load modules from file if it exists and has content."""
-    try:
-        if not MODULES_FILE.exists():
-            return []
-        
-        with MODULES_FILE.open('r', encoding='utf-8') as f:
-            module_lines = [line.strip() for line in f if line.strip()]
-        
-        return module_lines
-    except Exception as e:
-        logger.error(f"Error reading modules file: {e}", exc_info=True)
-        return []
-
 def _load_categories():
     """Load module categories from JSON file (excluding descriptions key).
     
@@ -767,42 +627,6 @@ def _categorize_module(module_name, categories_config):
     
     # Default to Misc for unmatched modules
     return 'Misc'
-
-
-    
-def _group_modules_by_name(modules_data: Dict[str, Dict[str, Any]]):
-    """Group modules by base name with descriptions.
-    
-    Args:
-        modules_data: Dict mapping module family names to {'versions': [...], 'description': '...'}
-    
-    Returns:
-        List of dicts with 'name' (base name), 'versions' (list of full names),
-        'description' (description text), and 'category' (category name)
-    """
-    categories_config = _load_categories()
-    result = []
-    
-    for family_name, data in modules_data.items():
-        versions = data.get('versions', [])
-        description = data.get('description', '')
-        
-        if not versions:
-            continue
-
-        result.append(
-            _module_record(
-                family_name,
-                versions,
-                categories_config,
-                description,
-            )
-        )
-    
-    # Sort all modules alphabetically by name (case-insensitive)
-    result.sort(key=lambda m: m['name'].lower())
-    
-    return result
 
 def _get_cached_modules() -> List[Dict[str, Any]]:
     """Get modules from cache. Returns empty list if cache is not ready."""
@@ -956,13 +780,9 @@ def descriptions_update():
 @modules_bp.route('/refresh-start', methods=['POST'])
 def refresh_start():
     """Start refresh process by clearing cache."""
-    global _streaming_in_progress
-    
     with _streaming_lock:
         if _streaming_in_progress:
             return jsonify({'error': 'Refresh already in progress'}), 409
-        
-        _streaming_in_progress = True
         _clear_modules_cache()
     
     return jsonify({'status': 'started'})
@@ -971,16 +791,12 @@ def refresh_start():
 @modules_bp.route('/load-descriptions', methods=['POST'])
 def load_descriptions():
     """Load descriptions for cached modules without clearing cache."""
-    global _streaming_in_progress
-    
     with _streaming_lock:
         if _streaming_in_progress:
             return jsonify({'error': 'Description loading already in progress'}), 409
         
         if _modules_cache is None or len(_modules_cache) == 0:
             return jsonify({'error': 'No cached modules to load descriptions for'}), 400
-        
-        _streaming_in_progress = True
     
     return jsonify({'status': 'started'})
 
@@ -992,6 +808,17 @@ def refresh_modules():
     
     def generate() -> Iterator[str]:
         global _streaming_in_progress
+        error_message = None
+        with _streaming_lock:
+            if _streaming_in_progress:
+                error_message = 'Refresh already in progress'
+            else:
+                _streaming_in_progress = True
+
+        if error_message:
+            yield _sse_event({'type': 'error', 'message': error_message})
+            return
+
         try:
             all_modules = []
             for event in _get_all_modules_two_stage_streaming():
@@ -1024,6 +851,17 @@ def stream_descriptions():
     
     def generate() -> Iterator[str]:
         global _streaming_in_progress
+        error_message = None
+        with _streaming_lock:
+            if _streaming_in_progress:
+                error_message = 'Description loading already in progress'
+            else:
+                _streaming_in_progress = True
+
+        if error_message:
+            yield _sse_event({'type': 'error', 'message': error_message})
+            return
+
         try:
             yield _sse_event({
                 'type': 'progress',
@@ -1133,91 +971,3 @@ def _preload_modules_cache():
         
     except Exception as e:
         logger.error(f"Error preloading modules cache: {e}", exc_info=True)
-
-
-def _preload_module_descriptions():
-    """
-    Preload module descriptions on app startup.
-    Fetches descriptions for all module families and saves to module_categories.json.
-    Only fetches descriptions for families not already in the cache.
-    """
-    logger.info("Preloading module descriptions on startup...")
-    try:
-        # Get all module families from module -t spider
-        output, error = _call_module_command('module -t spider', timeout=60)
-        if error:
-            logger.warning(f"Failed to get module list for descriptions preload: {error}")
-            return
-        
-        if not output or not output.strip():
-            logger.warning("module -t spider returned empty output during descriptions preload")
-            return
-        
-        # Parse all modules to get ALL families
-        modules_dict = _parse_module_spider_output(output)
-        all_families = sorted(modules_dict.keys())
-        total_families = len(all_families)
-        
-        logger.info(
-            f"Found {total_families} module families, "
-            "checking for missing descriptions..."
-        )
-        
-        # Load existing descriptions cache
-        descriptions_cache = _load_descriptions_cache()
-        
-        # Find families missing descriptions
-        missing_families = [f for f in all_families if f not in descriptions_cache]
-        
-        if not missing_families:
-            logger.info("All module descriptions already cached")
-            return
-        
-        logger.info(
-            f"Fetching descriptions for {len(missing_families)} "
-            "new module families..."
-        )
-        
-        new_descriptions = {}
-        failed_count = 0
-
-        for completed, family_name, description, error in _description_results(
-            missing_families,
-        ):
-            if error is not None:
-                failed_count += 1
-                new_descriptions[family_name] = ''
-            elif description is not None:
-                new_descriptions[family_name] = description
-            else:
-                new_descriptions[family_name] = ''
-                failed_count += 1
-
-            if completed % 50 == 0 or completed == len(missing_families):
-                if new_descriptions:
-                    _save_descriptions_cache(new_descriptions)
-                    logger.info(
-                        "Preloaded descriptions: "
-                        f"{completed}/{len(missing_families)} "
-                        f"({len(new_descriptions)} saved so far, "
-                        f"{failed_count} failed)"
-                    )
-                else:
-                    logger.info(
-                        "Preloaded descriptions: "
-                        f"{completed}/{len(missing_families)} "
-                        f"({failed_count} failed)"
-                    )
-        
-        # Final save (in case there were fewer than 50 items)
-        if new_descriptions:
-            _save_descriptions_cache(new_descriptions)
-            logger.info(
-                f"Preloaded {len(new_descriptions)} new descriptions to "
-                f"module_categories.json ({failed_count} failed)"
-            )
-        else:
-            logger.info(f"No new descriptions to save ({failed_count} failed)")
-        
-    except Exception as e:
-        logger.error(f"Error preloading module descriptions: {e}", exc_info=True)

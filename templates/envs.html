@@ -41,7 +41,7 @@
                 <td>
                   <button
                     type="button"
-                    class="btn btn-sm btn-primary view-env-export"
+                    class="btn btn-sm btn-primary view-env-history"
                     data-env-name="{{ env.name }}"
                     data-env-path="{{ env.path }}"
                   >
@@ -63,15 +63,15 @@
 
 <div
   class="modal fade"
-  id="envExportModal"
+  id="envHistoryModal"
   tabindex="-1"
-  aria-labelledby="envExportModalLabel"
+  aria-labelledby="envHistoryModalLabel"
   aria-hidden="true"
 >
   <div class="modal-dialog modal-xl modal-dialog-scrollable">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title" id="envExportModalLabel">
+        <h5 class="modal-title" id="envHistoryModalLabel">
           Dependencies / Env File
         </h5>
         <button
@@ -82,9 +82,9 @@
         ></button>
       </div>
       <div class="modal-body">
-        <p class="small text-muted mb-2" id="envExportPath"></p>
+        <p class="small text-muted mb-2" id="envHistoryPath"></p>
         <pre class="bg-light border rounded p-3 mb-0"><code
-          id="envExportOutput"
+          id="envHistoryOutput"
         >Loading...</code></pre>
       </div>
     </div>
@@ -93,44 +93,43 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-  const modalElement = document.getElementById('envExportModal');
-  const modalTitle = document.getElementById('envExportModalLabel');
-  const modalPath = document.getElementById('envExportPath');
-  const modalOutput = document.getElementById('envExportOutput');
-  const envExportModal = new bootstrap.Modal(modalElement);
+  const modalTitle = document.getElementById('envHistoryModalLabel');
+  const modalPath = document.getElementById('envHistoryPath');
+  const modalOutput = document.getElementById('envHistoryOutput');
+  const envHistoryModal = new bootstrap.Modal(
+    document.getElementById('envHistoryModal')
+  );
 
-  document.querySelectorAll('.view-env-export').forEach(function(button) {
-    button.addEventListener('click', function() {
-      const envName = button.dataset.envName;
-      const envPath = button.dataset.envPath;
+  document.addEventListener('click', async function(event) {
+    const button = event.target.closest('.view-env-history');
+    if (!button) {
+      return;
+    }
 
-      modalTitle.textContent = envName + ' Dependencies / Env File';
-      modalPath.textContent = envPath;
-      modalOutput.textContent = 'Loading...';
-      envExportModal.show();
+    const envName = button.dataset.envName;
+    const envPath = button.dataset.envPath;
 
-      fetch('{{ url_for("envs.export_env") }}', {
+    modalTitle.textContent = envName + ' Dependencies / Env File';
+    modalPath.textContent = envPath;
+    modalOutput.textContent = 'Loading...';
+    envHistoryModal.show();
+
+    try {
+      const response = await fetch('{{ url_for("envs.env_history") }}', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ path: envPath }),
-      })
-        .then(function(response) {
-          return response.json().then(function(data) {
-            if (!response.ok) {
-              throw new Error(data.error || 'Unable to export environment.');
-            }
-            return data;
-          });
-        })
-        .then(function(data) {
-          modalOutput.textContent = data.output || '(empty export)';
-        })
-        .catch(function(error) {
-          modalOutput.textContent = error.message;
-        });
-    });
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Unable to read environment history.');
+      }
+      modalOutput.textContent = data.output || '(empty history)';
+    } catch (error) {
+      modalOutput.textContent = error.message;
+    }
   });
 });
 </script>

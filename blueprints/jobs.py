@@ -3,7 +3,6 @@ import logging
 import os
 import re
 import subprocess
-import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -45,6 +44,42 @@ SEFF_PATHS = [
     '/opt/slurm/bin/seff',
     '/usr/local/bin/seff',
 ]
+JOB_ID_PATTERN = re.compile(r'^[A-Za-z0-9_.+-]+$')
+
+
+def _request_int(
+    name: str,
+    default: int,
+    min_value: int = 1,
+    max_value: int | None = None,
+) -> int:
+    """Read a bounded integer query parameter with a stable fallback."""
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+    value = max(value, min_value)
+    if max_value is not None:
+        value = min(value, max_value)
+    return value
+
+
+def _slurm_command_env() -> dict[str, str]:
+    """Return an environment with Cheaha SLURM libraries when present."""
+    env = os.environ.copy()
+    slurm_lib_path = Path('/cm/shared/apps/slurm/18.08.9/lib64')
+    if not slurm_lib_path.exists():
+        return env
+
+    existing_ld_path = env.get('LD_LIBRARY_PATH')
+    if existing_ld_path:
+        env['LD_LIBRARY_PATH'] = f'{slurm_lib_path}:{existing_ld_path}'
+    else:
+        env['LD_LIBRARY_PATH'] = str(slurm_lib_path)
+    return env
+
+
 def _call_sinfo() -> Tuple[Optional[str], Optional[str]]:
     """
     Call sinfo -s with absolute path and explicit environment.
@@ -144,34 +179,28 @@ def _save_seff_cache(cache: Dict[str, Dict[str, Any]]) -> None:
         logger.warning(f"Error saving seff cache: {e}")
 
 
-def _is_job_recent(job_start: str, days: int = 90) -> bool:
-    """Check if a job is within the specified number of days.
-    
-    Args:
-        job_start: Job start time string (from sacct)
-        days: Number of days to check (default 90)
-    
-    Returns:
-        True if job is within the specified days, False otherwise
-    """
-    try:
-        # Parse job start time (format: YYYY-MM-DDTHH:MM:SS or YYYY-MM-DD)
-        if 'T' in job_start:
-            job_dt = datetime.fromisoformat(job_start.replace('+00:00', ''))
-        else:
-            job_dt = datetime.strptime(job_start, '%Y-%m-%d')
-        
-        days_ago = datetime.now() - timedelta(days=days)
-        return job_dt >= days_ago
-    except Exception:
-        # If we can't parse, assume it's recent to be safe
-        return True
+def _cache_seff_result(
+    job_id: str,
+    output: str | None,
+    error: str | None,
+) -> None:
+    """Persist one seff result or error for later detail views."""
+    cache = _load_seff_cache()
+    cache[job_id] = {
+        'output': output,
+        'error': error,
+        'timestamp': time.time(),
+    }
+    _save_seff_cache(cache)
 
 
-def _call_seff(job_id: str, use_cache: bool = True, force_refresh: bool = False) -> Tuple[Optional[str], Optional[str]]:
+def _call_seff(
+    job_id: str,
+    use_cache: bool = True,
+    force_refresh: bool = False,
+) -> Tuple[Optional[str], Optional[str]]:
     """
     Call seff to get detailed job efficiency report, with caching.
-    Uses bash -lc to ensure proper environment for seff (Perl script needs SLURM libraries).
     
     Args:
         job_id: Job ID to get efficiency report for
@@ -181,6 +210,9 @@ def _call_seff(job_id: str, use_cache: bool = True, force_refresh: bool = False)
     Returns:
         Tuple of (output, error_message)
     """
+    if not JOB_ID_PATTERN.fullmatch(job_id):
+        return None, "Invalid job ID"
+
     # Check cache first
     if use_cache and not force_refresh:
         cache = _load_seff_cache()
@@ -200,69 +232,36 @@ def _call_seff(job_id: str, use_cache: bool = True, force_refresh: bool = False)
     if not seff_path:
         error_msg = "seff binary not found in standard locations"
         if use_cache:
-            # Cache the error too
-            cache = _load_seff_cache()
-            cache[job_id] = {'output': None, 'error': error_msg, 'timestamp': time.time()}
-            _save_seff_cache(cache)
+            _cache_seff_result(job_id, None, error_msg)
         return None, error_msg
     
-    # seff is a Perl script that needs SLURM libraries in LD_LIBRARY_PATH
-    # Use bash -lc to get proper environment, or set LD_LIBRARY_PATH explicitly
-    bash_path = find_binary(['/bin/bash', '/usr/bin/bash'])
-    if not bash_path:
-        bash_path = '/bin/bash'
-    
-    # Set up environment with SLURM library paths
-    env = os.environ.copy()
-    slurm_base = '/cm/shared/apps/slurm/18.08.9'
-    if os.path.exists(slurm_base):
-        lib_path = f'{slurm_base}/lib64'
-        if os.path.exists(lib_path):
-            # Add to LD_LIBRARY_PATH
-            existing_ld_path = env.get('LD_LIBRARY_PATH', '')
-            if existing_ld_path:
-                env['LD_LIBRARY_PATH'] = f'{lib_path}:{existing_ld_path}'
-            else:
-                env['LD_LIBRARY_PATH'] = lib_path
-    
     try:
-        # Use bash -lc to run seff with proper environment
         result = subprocess.run(
-            [bash_path, '-lc', f'{seff_path} {job_id}'],
+            [seff_path, job_id],
             capture_output=True,
             text=True,
             timeout=10,
-            env=env,
+            env=_slurm_command_env(),
             cwd=Path.cwd(),
         )
         if result.returncode == 0:
             output = result.stdout
-            # Cache the result
             if use_cache:
-                cache = _load_seff_cache()
-                cache[job_id] = {'output': output, 'error': None, 'timestamp': time.time()}
-                _save_seff_cache(cache)
+                _cache_seff_result(job_id, output, None)
             return output, None
         error_msg = f"seff failed: {result.stderr}"
-        # Cache the error too
         if use_cache:
-            cache = _load_seff_cache()
-            cache[job_id] = {'output': None, 'error': error_msg, 'timestamp': time.time()}
-            _save_seff_cache(cache)
+            _cache_seff_result(job_id, None, error_msg)
         return None, error_msg
     except subprocess.TimeoutExpired:
         error_msg = "seff command timed out"
         if use_cache:
-            cache = _load_seff_cache()
-            cache[job_id] = {'output': None, 'error': error_msg, 'timestamp': time.time()}
-            _save_seff_cache(cache)
+            _cache_seff_result(job_id, None, error_msg)
         return None, error_msg
     except Exception as e:
         error_msg = f"Error calling seff: {str(e)}"
         if use_cache:
-            cache = _load_seff_cache()
-            cache[job_id] = {'output': None, 'error': error_msg, 'timestamp': time.time()}
-            _save_seff_cache(cache)
+            _cache_seff_result(job_id, None, error_msg)
         return None, error_msg
 
 
@@ -659,134 +658,6 @@ def _parse_start_date_for_sort(start_str: str) -> float:
         return 0.0
 
 
-def _preload_seff_cache() -> None:
-    """Preload seff cache for all jobs from last 90 days in background.
-    Loops through all jobs, fetches seff data, and stores in JSON cache file.
-    """
-    def preload_worker():
-        """Background worker to preload seff data."""
-        try:
-            logger.info("Starting seff cache preload in background...")
-            username = os.environ.get('USER', '')
-            if not username:
-                logger.warning("No username found, skipping seff preload")
-                return
-            
-            # Get all jobs from last 90 days
-            output, error = _call_sacct(user=username, max_jobs=1000)
-            if error or not output:
-                logger.warning(f"Failed to get jobs for seff preload: {error}")
-                return
-            
-            jobs = _parse_sacct_output(output)
-            logger.info(f"Preloading seff data for {len(jobs)} jobs...")
-            
-            # Load existing cache once (create empty file if it doesn't exist)
-            cache = _load_seff_cache()
-            if not SEFF_CACHE_FILE.exists():
-                # Create empty cache file
-                SEFF_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-                _save_seff_cache({})
-                cache = {}
-            
-            cached_count = len([j for j in jobs if j.get('id') in cache])
-            new_count = 0
-            failed_count = 0
-            
-            seff_path = find_binary(SEFF_PATHS)
-            if not seff_path:
-                logger.warning("seff binary not found, skipping seff preload")
-                return
-            
-            # Process jobs one by one and update cache
-            for idx, job in enumerate(jobs, 1):
-                job_id = job.get('id')
-                if not job_id:
-                    continue
-                
-                # Skip if already cached
-                if job_id in cache:
-                    continue
-                
-                # Fetch seff data directly (don't use _call_seff to avoid cache thrashing)
-                # seff is a Perl script that needs SLURM libraries in LD_LIBRARY_PATH
-                bash_path = find_binary(['/bin/bash', '/usr/bin/bash'])
-                if not bash_path:
-                    bash_path = '/bin/bash'
-                
-                # Set up environment with SLURM library paths
-                env = os.environ.copy()
-                slurm_base = '/cm/shared/apps/slurm/18.08.9'
-                if os.path.exists(slurm_base):
-                    lib_path = f'{slurm_base}/lib64'
-                    if os.path.exists(lib_path):
-                        existing_ld_path = env.get('LD_LIBRARY_PATH', '')
-                        if existing_ld_path:
-                            env['LD_LIBRARY_PATH'] = f'{lib_path}:{existing_ld_path}'
-                        else:
-                            env['LD_LIBRARY_PATH'] = lib_path
-                
-                try:
-                    # Use bash -lc to run seff with proper environment
-                    result = subprocess.run(
-                        [bash_path, '-lc', f'{seff_path} {job_id}'],
-                        capture_output=True,
-                        text=True,
-                        timeout=10,
-                        env=env,
-                        cwd=Path.cwd(),
-                    )
-                    
-                    if result.returncode == 0:
-                        output = result.stdout
-                        cache[job_id] = {
-                            'output': output,
-                            'error': None,
-                            'timestamp': time.time(),
-                        }
-                        new_count += 1
-                    else:
-                        error_msg = f"seff failed: {result.stderr}"
-                        cache[job_id] = {
-                            'output': None,
-                            'error': error_msg,
-                            'timestamp': time.time(),
-                        }
-                        failed_count += 1
-                    
-                    # Save cache periodically (every 10 jobs) and at the end
-                    if new_count % 10 == 0 or idx == len(jobs):
-                        _save_seff_cache(cache)
-                        logger.info(f"Seff preload progress: {new_count} new, {cached_count} cached, {failed_count} failed ({idx}/{len(jobs)})")
-                        
-                except subprocess.TimeoutExpired:
-                    cache[job_id] = {
-                        'output': None,
-                        'error': 'seff command timed out',
-                        'timestamp': time.time(),
-                    }
-                    failed_count += 1
-                except Exception as e:
-                    logger.debug(f"Error preloading seff for job {job_id}: {e}")
-                    cache[job_id] = {
-                        'output': None,
-                        'error': f"Error calling seff: {str(e)}",
-                        'timestamp': time.time(),
-                    }
-                    failed_count += 1
-            
-            # Final save
-            _save_seff_cache(cache)
-            logger.info(f"Seff preload complete: {new_count} new entries, {cached_count} already cached, {failed_count} failed")
-        except Exception as e:
-            logger.error(f"Error in seff preload worker: {e}", exc_info=True)
-    
-    # Start background thread
-    thread = threading.Thread(target=preload_worker, daemon=True)
-    thread.start()
-    logger.info("Started seff cache preload thread")
-
-
 def _parse_time_to_seconds(time_str: str) -> int:
     """Parse SLURM time format (HH:MM:SS or DD-HH:MM:SS) to seconds."""
     if not time_str or time_str == 'N/A':
@@ -851,7 +722,7 @@ def jobs():
     job_history = []
     total_history = 0
     history_error = None
-    current_page = int(request.args.get('page', 1))
+    current_page = _request_int('page', 1)
     per_page = 10
     
     if username:
@@ -1009,8 +880,8 @@ def jobs_history():
     if not username:
         return jsonify({'error': 'User not found'}), 400
     
-    page = int(request.args.get('page', 1))
-    per_page = int(request.args.get('per_page', 10))
+    page = _request_int('page', 1)
+    per_page = _request_int('per_page', 10, max_value=100)
     offset = (page - 1) * per_page
     
     output, error = _call_sacct(user=username, max_jobs=1000)  # Get more jobs for pagination
@@ -1054,6 +925,9 @@ def job_efficiency(job_id: str):
     Returns:
         JSON response with seff output
     """
+    if not JOB_ID_PATTERN.fullmatch(job_id):
+        return jsonify({'error': 'Invalid job ID'}), 400
+
     # Check if refresh was requested
     force_refresh = request.args.get('refresh', '').lower() == 'true'
     

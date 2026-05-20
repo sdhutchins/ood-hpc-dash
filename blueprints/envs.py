@@ -1,4 +1,3 @@
-import ast
 from pathlib import Path
 
 from flask import Blueprint, jsonify, render_template, request
@@ -80,12 +79,6 @@ def _group_envs(envs: list[dict]) -> tuple[dict, list[str]]:
     return grouped, ordered
 
 
-def _known_env_paths() -> set[str]:
-    """Return configured env paths so export requests stay scoped."""
-    envs, _ = _load_envs_from_conda_list()
-    return {env["path"] for env in envs}
-
-
 def _parse_conda_package_record(record: str) -> tuple[str, str] | None:
     """Parse one conda history package record into a stable dependency spec."""
     package_spec = record.split("::", 1)[-1]
@@ -97,30 +90,13 @@ def _parse_conda_package_record(record: str) -> tuple[str, str] | None:
     return package_name, f"{package_name}={version}={build}"
 
 
-def _parse_update_specs(line: str) -> list[str]:
-    """Parse a conda history update specs comment when present."""
-    _, specs_text = line.split(":", 1)
-    try:
-        specs = ast.literal_eval(specs_text.strip())
-    except (SyntaxError, ValueError):
-        return []
-
-    if not isinstance(specs, list):
-        return []
-    return [spec for spec in specs if isinstance(spec, str)]
-
-
-def _parse_conda_history(history_text: str) -> tuple[list[str], list[str]]:
+def _parse_conda_history(history_text: str) -> list[str]:
     """Build current dependency specs from conda-meta/history transactions."""
     dependencies_by_name: dict[str, str] = {}
-    requested_specs: list[str] = []
 
     for raw_line in history_text.splitlines():
         line = raw_line.strip()
         if not line:
-            continue
-        if line.startswith("# update specs:"):
-            requested_specs = _parse_update_specs(line)
             continue
         if line[0] not in {"+", "-"}:
             continue
@@ -135,26 +111,7 @@ def _parse_conda_history(history_text: str) -> tuple[list[str], list[str]]:
         else:
             dependencies_by_name.pop(package_name, None)
 
-    return sorted(dependencies_by_name.values()), requested_specs
-
-
-def _format_env_history(
-    env_name: str,
-    dependencies: list[str],
-    requested_specs: list[str],
-) -> str:
-    """Format parsed conda history as an env-file-like YAML document."""
-    lines = [
-        f"name: {env_name}",
-        "dependencies:",
-    ]
-    lines.extend(f"  - {dependency}" for dependency in dependencies)
-
-    if requested_specs:
-        lines.append("requested_specs:")
-        lines.extend(f"  - {spec}" for spec in requested_specs)
-
-    return "\n".join(lines).strip() + "\n"
+    return sorted(dependencies_by_name.values())
 
 
 def _read_env_history(env_path: str) -> tuple[str | None, str | None]:
@@ -168,12 +125,14 @@ def _read_env_history(env_path: str) -> tuple[str | None, str | None]:
     except OSError as exc:
         return None, f"Unable to read conda history: {exc}"
 
-    dependencies, requested_specs = _parse_conda_history(history_text)
+    dependencies = _parse_conda_history(history_text)
     if not dependencies:
         return None, f"No dependency records found in {history_path}."
 
     env_name = Path(env_path).name
-    return _format_env_history(env_name, dependencies, requested_specs), None
+    lines = [f"name: {env_name}", "dependencies:"]
+    lines.extend(f"  - {dependency}" for dependency in dependencies)
+    return "\n".join(lines) + "\n", None
 
 # Category display metadata
 CATEGORY_META = {
@@ -201,8 +160,8 @@ def envs():
     )
 
 
-@envs_bp.route('/export', methods=['POST'])
-def export_env() -> tuple[object, int] | object:
+@envs_bp.route('/history', methods=['POST'])
+def env_history() -> tuple[object, int] | object:
     """Return parsed conda history for a configured environment."""
     payload = request.get_json(silent=True) or {}
     env_path = payload.get("path")
@@ -210,7 +169,9 @@ def export_env() -> tuple[object, int] | object:
         return jsonify({"error": "Environment path is required."}), 400
 
     env_path = env_path.strip()
-    if env_path not in _known_env_paths():
+    envs_list, _ = _load_envs_from_conda_list()
+    known_env_paths = {env["path"] for env in envs_list}
+    if env_path not in known_env_paths:
         return jsonify({"error": "Environment path is not configured."}), 403
 
     output, error = _read_env_history(env_path)
