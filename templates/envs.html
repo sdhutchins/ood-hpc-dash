@@ -71,7 +71,9 @@
   <div class="modal-dialog modal-xl modal-dialog-scrollable">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title" id="envExportModalLabel">Environment File</h5>
+        <h5 class="modal-title" id="envExportModalLabel">
+          Dependencies / Env File
+        </h5>
         <button
           type="button"
           class="btn-close"
@@ -102,7 +104,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const envName = button.dataset.envName;
       const envPath = button.dataset.envPath;
 
-      modalTitle.textContent = envName + ' Environment File';
+      modalTitle.textContent = envName + ' Dependencies / Env File';
       modalPath.textContent = envPath;
       modalOutput.textContent = 'Loading...';
       envExportModal.show();
