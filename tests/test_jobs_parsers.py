@@ -5,6 +5,7 @@ from __future__ import annotations
 from blueprints.jobs import (
     _parse_sacct_output,
     _parse_sinfo_output,
+    _parse_squeue_output,
     _parse_time_to_seconds,
 )
 
@@ -41,6 +42,23 @@ def test_parse_sacct_output_builds_job_record() -> None:
     assert job["state"] == "COMPLETED"
     assert job["partition"] == "express"
     assert job["memory_mb"] == 1024.0
+
+
+def test_parse_squeue_output_handles_spaced_job_names() -> None:
+    output = "12345|alignment batch 1|RUNNING|express|00:10:00|02:00:00|me"
+    jobs = _parse_squeue_output(output)
+
+    assert jobs == [
+        {
+            "id": "12345",
+            "name": "alignment batch 1",
+            "state": "RUNNING",
+            "partition": "express",
+            "time_used": "00:10:00",
+            "time_limit": "02:00:00",
+            "user": "me",
+        }
+    ]
 
 
 def test_parse_time_to_seconds_handles_hms_and_day_formats() -> None:

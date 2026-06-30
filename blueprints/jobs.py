@@ -14,7 +14,6 @@ from utils import find_binary
 
 jobs_bp = Blueprint('jobs', __name__, url_prefix='/jobs')
 logger = logging.getLogger(__name__)
-SLURM_LOAD_FILE = Path('logs/slurm_load.txt')
 PARTITION_METADATA_FILE = Path('config/partition_metadata.json')
 SEFF_CACHE_FILE = Path('logs/seff_cache.json')
 
@@ -93,73 +92,55 @@ def _slurm_command_env() -> dict[str, str]:
     return env
 
 
-def _call_sinfo() -> tuple[str | None, str | None]:
-    """
-    Call sinfo -s with absolute path and explicit environment.
-    
+def _run_slurm_command(
+    search_paths: list[str],
+    args: list[str],
+    timeout: int = 30,
+) -> tuple[str | None, str | None]:
+    """Run a SLURM binary with explicit environment.
+
+    Args:
+        search_paths: Candidate absolute paths for the binary
+        args: Arguments to pass after the binary path
+        timeout: Subprocess timeout in seconds
+
     Returns:
-        Tuple of (output, error_message)
+        Tuple of (stdout, error_message)
     """
-    sinfo_path = find_binary(SINFO_PATHS)
-    if not sinfo_path:
-        return None, "sinfo binary not found in standard locations"
-    
+    binary = find_binary(search_paths)
+    if not binary:
+        name = Path(search_paths[0]).name if search_paths else 'slurm'
+        return None, f"{name} binary not found in standard locations"
+
     try:
         result = subprocess.run(
-            [sinfo_path, '-s'],
+            [binary, *args],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=timeout,
             env=_slurm_command_env(),
             cwd=Path.cwd(),
         )
         if result.returncode == 0:
             return result.stdout, None
-        return None, f"sinfo failed: {result.stderr}"
+        return None, f"{Path(binary).name} failed: {result.stderr}"
     except subprocess.TimeoutExpired:
-        return None, "sinfo command timed out"
+        return None, f"{Path(binary).name} command timed out"
     except OSError as e:
-        return None, f"Error calling sinfo: {str(e)}"
+        return None, f"Error calling {Path(binary).name}: {e}"
+
+
+def _call_sinfo() -> tuple[str | None, str | None]:
+    """Call sinfo -s with absolute path and explicit environment."""
+    return _run_slurm_command(SINFO_PATHS, ['-s'])
 
 
 def _call_squeue(user: str | None = None) -> tuple[str | None, str | None]:
-    """
-    Call squeue with absolute path and explicit environment.
-    
-    Args:
-        user: Optional username to filter jobs. If None, shows all jobs.
-    
-    Returns:
-        Tuple of (output, error_message)
-    """
-    squeue_path = find_binary(SQUEUE_PATHS)
-    if not squeue_path:
-        return None, "squeue binary not found in standard locations"
-    
-    cmd = [
-        squeue_path,
-        '--noheader',
-        f'--format={SQUEUE_OUTPUT_FORMAT}',
-    ]
+    """Call squeue with absolute path and explicit environment."""
+    args = ['--noheader', f'--format={SQUEUE_OUTPUT_FORMAT}']
     if user:
-        cmd.extend(['-u', user])
-    
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env=_slurm_command_env(),
-            cwd=Path.cwd(),
-        )
-        if result.returncode == 0:
-            return result.stdout, None
-        return None, f"squeue failed: {result.stderr}"
-    except subprocess.TimeoutExpired:
-        return None, "squeue command timed out"
-    except OSError as e:
-        return None, f"Error calling squeue: {str(e)}"
+        args.extend(['-u', user])
+    return _run_slurm_command(SQUEUE_PATHS, args)
 
 
 def _parse_squeue_output(output: str) -> list[dict[str, str]]:
@@ -314,59 +295,27 @@ def _call_seff(
 
 
 def _call_sacct(user: str | None = None) -> tuple[str | None, str | None]:
-    """
-    Call sacct to get job history with efficiency metrics.
-    
-    Args:
-        user: Optional username to filter jobs. If None, uses current user.
-    
-    Returns:
-        Tuple of (output, error_message)
-    """
-    sacct_path = find_binary(SACCT_PATHS)
-    if not sacct_path:
-        return None, "sacct binary not found in standard locations"
-    
+    """Call sacct to get job history with efficiency metrics."""
     if not user:
         user = os.environ.get('USER', '')
-    
-    # Calculate date 90 days ago in YYYY-MM-DD format
+
     start_date = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
-    
+
     # CPUUtilization is not available in all SLURM versions, so it is
     # calculated from TotalCPU during parsing.
     sacct_fields = (
         'JobID,JobName,State,Partition,Start,End,Elapsed,TotalCPU,ReqCPUS,'
         'MaxRSS,AllocCPUS,CPUTime'
     )
-    # Use --allocations to show only job-level entries (not individual steps)
-    cmd = [
-        sacct_path,
+    return _run_slurm_command(SACCT_PATHS, [
         f'--format={sacct_fields}',
         '--parsable2',
         '--noheader',
-        '--units=M',  # Memory in MB
-        '--allocations',  # Only show job allocations, not steps
+        '--units=M',
+        '--allocations',
         '-u', user,
-        '--starttime', start_date,  # Last 90 days
-    ]
-    
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env=_slurm_command_env(),
-            cwd=Path.cwd(),
-        )
-        if result.returncode == 0:
-            return result.stdout, None
-        return None, f"sacct failed: {result.stderr}"
-    except subprocess.TimeoutExpired:
-        return None, "sacct command timed out"
-    except OSError as e:
-        return None, f"Error calling sacct: {str(e)}"
+        '--starttime', start_date,
+    ])
 
 
 def _load_partition_metadata() -> dict[str, Any]:
@@ -476,85 +425,6 @@ def _get_partition_info() -> tuple[list[dict] | None, str | None]:
         error_msg = f"Error parsing sinfo output: {str(e)}"
         logger.warning(error_msg, exc_info=True)
         return None, error_msg
-
-
-def _parse_slurm_load() -> dict[str, Any] | None:
-    """Parse slurm-load output and return structured data."""
-    if not SLURM_LOAD_FILE.exists():
-        return None
-    
-    try:
-        # Check if file is stale (older than 10 minutes)
-        file_age = time.time() - SLURM_LOAD_FILE.stat().st_mtime
-        if file_age > 600:  # 10 minutes
-            return None
-        
-        with SLURM_LOAD_FILE.open('r', encoding='utf-8') as f:
-            content = f.read().strip()
-        
-        if not content:
-            return None
-        
-        # Parse the output
-        load_data = {}
-        lines = content.split('\n')
-        for line in lines:
-            line = line.strip()
-            if 'Allocated nodes:' in line:
-                load_data['allocated_nodes'] = int(line.split(':')[1].strip())
-            elif 'Idle nodes:' in line:
-                load_data['idle_nodes'] = int(line.split(':')[1].strip())
-            elif 'Total CPU cores:' in line:
-                load_data['total_cores'] = int(line.split(':')[1].strip())
-            elif 'Allocated cores:' in line:
-                load_data['allocated_cores'] = int(line.split(':')[1].strip())
-            elif 'Idle cores:' in line:
-                load_data['idle_cores'] = int(line.split(':')[1].strip())
-            elif 'Running/Pending jobs:' in line:
-                jobs_part = line.split(':')[1].strip()
-                if '/' in jobs_part:
-                    parts = jobs_part.split('/')
-                    load_data['running_jobs'] = int(parts[0].strip())
-                    load_data['pending_jobs'] = int(parts[1].strip())
-            elif '% of used cores' in line:
-                pct = line.split(':')[1].strip().replace('%', '')
-                load_data['cores_pct'] = float(pct)
-            elif '% of used nodes' in line:
-                pct = line.split(':')[1].strip().replace('%', '')
-                load_data['nodes_pct'] = float(pct)
-        
-        return load_data if load_data else None
-        
-    except (OSError, ValueError, IndexError) as e:
-        logger.warning(f"Error parsing slurm-load data: {e}", exc_info=True)
-        return None
-
-
-def _format_time_limit(timelimit: str) -> str:
-    """Format SLURM time limit to readable format."""
-    # Handle formats like "2:00:00", "2-02:00:00", "6-06:00:00"
-    if '-' in timelimit:
-        # Format: days-hours:minutes:seconds
-        parts = timelimit.split('-')
-        days = int(parts[0])
-        time_parts = parts[1].split(':')
-        hours = int(time_parts[0])
-        if days > 0:
-            if hours > 0:
-                return f"{days} days, {hours} hours"
-            return f"{days} days"
-        return f"{hours} hours"
-    else:
-        # Format: hours:minutes:seconds
-        time_parts = timelimit.split(':')
-        hours = int(time_parts[0])
-        if hours < 24:
-            return f"{hours} hours"
-        days = hours // 24
-        remaining_hours = hours % 24
-        if remaining_hours > 0:
-            return f"{days} days, {remaining_hours} hours"
-        return f"{days} days"
 
 
 def _generate_partition_reference_data(
@@ -753,7 +623,6 @@ def _parse_time_to_seconds(time_str: str) -> int:
 def jobs():
     """Render the jobs page with partition information."""
     partitions, error = _get_partition_info()
-    slurm_load_data = _parse_slurm_load()
     
     # Get current user
     username = os.environ.get('USER', '')
@@ -801,17 +670,6 @@ def jobs():
             'available_nodes': sum(p['idle'] for p in partitions),
             'allocated_nodes': sum(p['allocated'] for p in partitions),
         }
-        # Add slurm_load data to summary if available
-        if slurm_load_data:
-            summary.update({
-                'total_cores': slurm_load_data.get('total_cores'),
-                'allocated_cores': slurm_load_data.get('allocated_cores'),
-                'idle_cores': slurm_load_data.get('idle_cores'),
-                'running_jobs': slurm_load_data.get('running_jobs'),
-                'pending_jobs': slurm_load_data.get('pending_jobs'),
-                'cores_pct': slurm_load_data.get('cores_pct'),
-                'nodes_pct': slurm_load_data.get('nodes_pct'),
-            })
     
     # Calculate pagination info
     total_pages = (total_history + per_page - 1) // per_page if total_history > 0 else 0

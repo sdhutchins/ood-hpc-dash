@@ -1,5 +1,5 @@
 #!/bin/bash
-# Script to update partitions list from sinfo -s and slurm-load
+# Archived: jobs.py uses live sinfo and no longer reads these cache files.
 
 # Ensure logs directory exists
 mkdir -p logs

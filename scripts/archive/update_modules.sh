@@ -1,5 +1,5 @@
 #!/bin/bash
-# Script to update modules list from module spider
+# Archived: app.py no longer starts this; modules use live Lmod spider.
 
 # Ensure logs directory exists
 mkdir -p logs
