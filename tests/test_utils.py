@@ -7,10 +7,12 @@ from pathlib import Path
 
 from utils import (
     CustomJsonEncoder,
+    CustomJsonProvider,
     expand_path,
     find_binary,
     load_settings,
     validate_code_editor_path,
+    validate_project_directory,
 )
 
 
@@ -70,6 +72,28 @@ def test_validate_code_editor_path_requires_allowed_existing_directory(
     assert invalid_error is not None
 
 
+def test_validate_project_directory_uses_project_roots(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    allowed_root = tmp_path / "projects"
+    allowed_root.mkdir()
+    project_dir = allowed_root / "repo-root"
+    project_dir.mkdir()
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+
+    monkeypatch.setenv("OOD_HPC_DASH_PROJECT_ROOTS", str(allowed_root))
+
+    valid_path, valid_error = validate_project_directory(str(project_dir))
+    invalid_path, invalid_error = validate_project_directory(str(other_dir))
+
+    assert valid_path == project_dir
+    assert valid_error is None
+    assert invalid_path is None
+    assert invalid_error is not None
+
+
 def test_custom_json_encoder_handles_path_and_datetime() -> None:
     from datetime import datetime
 
@@ -78,6 +102,19 @@ def test_custom_json_encoder_handles_path_and_datetime() -> None:
         "created": datetime(2024, 1, 1, 12, 0, 0),
     }
     encoded = json.dumps(payload, cls=CustomJsonEncoder)
+
+    assert '"/tmp/example"' in encoded
+    assert "2024-01-01T12:00:00" in encoded
+
+
+def test_custom_json_provider_handles_path_and_datetime(app) -> None:
+    from datetime import datetime
+
+    assert isinstance(app.json, CustomJsonProvider)
+    encoded = app.json.dumps({
+        "path": Path("/tmp/example"),
+        "created": datetime(2024, 1, 1, 12, 0, 0),
+    })
 
     assert '"/tmp/example"' in encoded
     assert "2024-01-01T12:00:00" in encoded

@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import flaskcode
 from flask import Flask, abort, render_template, request, session
@@ -18,19 +19,19 @@ from blueprints.jobs import jobs_bp
 from blueprints.modules import _preload_modules_cache, modules_bp
 from blueprints.projects import projects_bp
 from blueprints.settings import settings_bp
-from utils import load_settings, safe_code_editor_path
+from utils import CustomJsonProvider, load_settings, safe_code_editor_path
 
 SECRET_KEY_FILE = Path('config/.secret_key')
+LOG_DIR = Path('logs')
 CSRF_PROTECTED_ENDPOINTS = {
     'settings.save_settings',
     'envs.env_history',
     'modules.refresh_start',
-    'modules.load_descriptions',
 }
 CSRF_PROTECTED_STREAM_ENDPOINTS = {
     'modules.refresh_modules',
-    'modules.stream_descriptions',
 }
+logger = logging.getLogger(__name__)
 
 
 def _load_secret_key() -> str:
@@ -70,44 +71,37 @@ def _csrf_token() -> str:
     session['csrf_token'] = token
     return token
 
-app = Flask(__name__)
-app.config['SECRET_KEY'] = _load_secret_key()
 
-settings_data = load_settings()
+def _configure_logging() -> None:
+    """Configure process logging once for Passenger and local Flask runs."""
+    LOG_DIR.mkdir(exist_ok=True)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
 
-app.config.from_object(flaskcode.default_config)
-app.config['FLASKCODE_RESOURCE_BASEPATH'] = settings_data.get(
-    "code_editor_path",
-    str(Path.cwd()),
-)
-app.config['FLASKCODE_RESOURCE_BASEPATH'] = safe_code_editor_path(
-    app.config['FLASKCODE_RESOURCE_BASEPATH']
-)
-app.register_blueprint(flaskcode.blueprint, url_prefix='/flaskcode')
+    formatter = logging.Formatter(
+        '[%(name)s - %(asctime)s] - [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    )
 
-log_dir = Path('logs')
-log_dir.mkdir(exist_ok=True)
+    handler_names = {
+        handler.get_name()
+        for handler in root_logger.handlers
+    }
+    if 'ood_hpc_dash_file' not in handler_names:
+        file_handler = logging.FileHandler(LOG_DIR / 'app.log')
+        file_handler.set_name('ood_hpc_dash_file')
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
 
-file_handler = logging.FileHandler('logs/app.log')
-file_handler.setLevel(logging.INFO)
+    if 'ood_hpc_dash_stream' not in handler_names:
+        stream_handler = logging.StreamHandler(sys.stderr)
+        stream_handler.set_name('ood_hpc_dash_stream')
+        stream_handler.setLevel(logging.INFO)
+        stream_handler.setFormatter(formatter)
+        root_logger.addHandler(stream_handler)
 
-stream_handler = logging.StreamHandler(sys.stderr)
-stream_handler.setLevel(logging.INFO)
-
-formatter = logging.Formatter(
-    '[%(name)s - %(asctime)s] - [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-)
-file_handler.setFormatter(formatter)
-stream_handler.setFormatter(formatter)
-
-root_logger = logging.getLogger()
-root_logger.setLevel(logging.INFO)
-root_logger.addHandler(file_handler)
-root_logger.addHandler(stream_handler)
-
-logger = logging.getLogger(__name__)
-logger.info("Application initialized - logging configured")
+    logger.info("Application initialized - logging configured")
 
 
 def _run_background_script(
@@ -179,27 +173,23 @@ def update_disk_quota_background(force: bool = False) -> None:
     _run_background_script('get_disk_quota.sh', quota_file, max_age=300)
 
 
-quota_thread = threading.Thread(
-    target=lambda: update_disk_quota_background(force=True),
-    daemon=True,
-)
-quota_thread.start()
+def _start_background_threads() -> None:
+    """Start non-request startup work after an application is created."""
+    quota_thread = threading.Thread(
+        target=lambda: update_disk_quota_background(force=True),
+        name='disk-quota-refresh',
+        daemon=True,
+    )
+    quota_thread.start()
 
-modules_preload_thread = threading.Thread(
-    target=_preload_modules_cache,
-    daemon=True,
-)
-modules_preload_thread.start()
-
-app.register_blueprint(modules_bp)
-app.register_blueprint(jobs_bp)
-app.register_blueprint(envs_bp)
-app.register_blueprint(projects_bp)
-app.register_blueprint(settings_bp)
-app.register_blueprint(editor_bp)
+    modules_preload_thread = threading.Thread(
+        target=_preload_modules_cache,
+        name='module-cache-preload',
+        daemon=True,
+    )
+    modules_preload_thread.start()
 
 
-@app.before_request
 def validate_csrf_token() -> None:
     """Reject cross-site requests to app routes that mutate state or scan HPC."""
     endpoint = request.endpoint
@@ -223,13 +213,14 @@ def validate_csrf_token() -> None:
         abort(400)
 
 
-@app.context_processor
-def inject_navbar_color() -> dict[str, str]:
+def inject_shared_template_values(
+    settings_defaults: dict[str, Any],
+) -> dict[str, str]:
     """Make shared template values available, reloading settings each request."""
     current = load_settings()
     navbar_color = current.get(
         "navbar_color",
-        settings_data.get("navbar_color", "#ede7f6"),
+        settings_defaults.get("navbar_color", "#ede7f6"),
     )
     return {
         "csrf_token": _csrf_token(),
@@ -341,7 +332,6 @@ def _parse_disk_quota() -> dict[str, object] | None:
         return None
 
 
-@app.route("/")
 def index() -> str:
     """Render the home page with disk quota information."""
     logger.info("Home page accessed")
@@ -352,5 +342,59 @@ def index() -> str:
     return render_template("index.html", disk_quota=disk_quota, username=username)
 
 
+def create_app(test_config: dict[str, Any] | None = None) -> Flask:
+    """Create and configure the Flask application."""
+    application = Flask(__name__)
+    settings_data = load_settings()
+    configured_secret = (
+        test_config.get('SECRET_KEY')
+        if test_config is not None
+        else None
+    )
+
+    application.config['SECRET_KEY'] = configured_secret or _load_secret_key()
+    application.config.from_object(flaskcode.default_config)
+    application.json = CustomJsonProvider(application)
+    application.config['FLASKCODE_RESOURCE_BASEPATH'] = settings_data.get(
+        "code_editor_path",
+        str(Path.cwd()),
+    )
+    application.config['FLASKCODE_RESOURCE_BASEPATH'] = safe_code_editor_path(
+        application.config['FLASKCODE_RESOURCE_BASEPATH']
+    )
+    application.config.setdefault('START_BACKGROUND_THREADS', True)
+    if test_config is not None:
+        application.config.update(test_config)
+    application.config.update(
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE='Lax',
+        SESSION_COOKIE_SECURE=not application.config.get('TESTING', False),
+    )
+
+    _configure_logging()
+
+    application.register_blueprint(flaskcode.blueprint, url_prefix='/flaskcode')
+    application.register_blueprint(modules_bp)
+    application.register_blueprint(jobs_bp)
+    application.register_blueprint(envs_bp)
+    application.register_blueprint(projects_bp)
+    application.register_blueprint(settings_bp)
+    application.register_blueprint(editor_bp)
+
+    application.before_request(validate_csrf_token)
+    application.context_processor(
+        lambda: inject_shared_template_values(settings_data)
+    )
+    application.add_url_rule("/", "index", index)
+
+    if (
+        application.config.get('START_BACKGROUND_THREADS')
+        and not application.config.get('TESTING')
+    ):
+        _start_background_threads()
+
+    return application
+
+
 if __name__ == "__main__":
-    app.run()
+    create_app().run()
