@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.1]
+
+### Fixed
+
+- Add `/data/project` to project scan allowed roots so shared lab directories are accessible
+
 ## [0.2.0]
 
 ### Added
