@@ -176,6 +176,7 @@ def get_project_allowed_roots() -> list[Path]:
             '$HOME/Dev/src-repos',
             f'/data/user/{username}' if username else '',
             f'/scratch/{username}' if username else '',
+            '/data/project',
             str(Path.cwd()),
         ],
     )
