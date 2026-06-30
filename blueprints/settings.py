@@ -15,6 +15,7 @@ from utils import (
     load_settings,
     save_settings as save_settings_to_file,
     validate_code_editor_path,
+    validate_project_directory,
 )
 
 settings_bp = Blueprint('settings', __name__, url_prefix='/settings')
@@ -91,12 +92,20 @@ def save_settings():
         # Get project directories (can be multiple, separated by newlines)
         project_directories_text = request.form.get('project_directories')
         if project_directories_text is not None:
-            project_directories = _parse_path_textarea(project_directories_text)
-            # Validate paths are not empty and are strings
-            project_directories = [
-                p for p in project_directories
-                if p and isinstance(p, str)
-            ]
+            project_directories = []
+            for raw_project_directory in _parse_path_textarea(
+                project_directories_text
+            ):
+                validated_directory, directory_error = (
+                    validate_project_directory(raw_project_directory)
+                )
+                if directory_error is not None or validated_directory is None:
+                    flash(
+                        directory_error or 'Invalid project directory.',
+                        'error',
+                    )
+                    return redirect(url_for('settings.settings'))
+                project_directories.append(str(validated_directory))
             logger.info(
                 f"Parsed {len(project_directories)} project directories: "
                 f"{project_directories}"

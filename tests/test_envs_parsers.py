@@ -7,6 +7,7 @@ from blueprints.envs import (
     _group_envs,
     _parse_conda_history,
     _parse_conda_package_record,
+    _resolve_env_directory,
 )
 
 SAMPLE_CONDA_HISTORY = """
@@ -31,9 +32,9 @@ def test_parse_conda_history_tracks_add_and_remove() -> None:
     assert not any(dep.startswith("openssl=") for dep in dependencies)
 
 
-def test_categorize_env_prefers_mamba_and_conda_labels() -> None:
+def test_categorize_env_prefers_scratch_over_tool_labels() -> None:
     assert _categorize_env("/home/user/.conda/envs/analysis") == "Conda"
-    assert _categorize_env("/scratch/user/mamba/envs/work") == "Mamba"
+    assert _categorize_env("/scratch/user/mamba/envs/work") == "Scratch"
     assert _categorize_env("/scratch/user/project/env") == "Scratch"
 
 
@@ -47,3 +48,10 @@ def test_group_envs_sorts_categories_and_names() -> None:
 
     assert order[:2] == ["Conda", "Scratch"]
     assert [env["name"] for env in grouped["Conda"]] == ["alpha", "beta"]
+
+
+def test_resolve_env_directory_normalizes_trailing_slash(tmp_path) -> None:
+    env_dir = tmp_path / "env"
+    env_dir.mkdir()
+
+    assert _resolve_env_directory(f"{env_dir}/") == env_dir.resolve()
