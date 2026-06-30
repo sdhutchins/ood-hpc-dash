@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -26,6 +27,7 @@ PROJECT_REPO_ERRORS: tuple[type[Exception], ...] = (
     KeyError,
     TypeError,
 )
+SSH_REMOTE_PATTERN = re.compile(r'^git@([^:]+):(.+)$')
 
 # git-status-checker timeout scales with number of directories
 _CHECKER_TIMEOUT_BASE = 120
@@ -146,6 +148,8 @@ def _git_info_from_checker(
         'last_commit_date': None,
         'branch': None,
         'remote': None,
+        'remote_name': None,
+        'remote_web_url': None,
         'up_to_date': repo_status.get('up_to_date', True),
         'has_remote_changes': repo_status.get('has_remote_changes', False),
         'local_changes': repo_status.get('local_changes', []),
@@ -167,9 +171,13 @@ def _git_info_from_checker(
                 git_info['last_commit_author'] = parts[1]
                 git_info['last_commit_date'] = parts[3]
 
-        git_info['remote'] = _get_remote_url(
-            repo_path, git_info['branch']
+        remote_name, remote_url = _get_remote(
+            repo_path,
+            git_info['branch'],
         )
+        git_info['remote_name'] = remote_name
+        git_info['remote'] = remote_url
+        git_info['remote_web_url'] = _remote_web_url(remote_url)
 
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         logger.debug(
@@ -195,36 +203,90 @@ def _repo_stdout(repo_path: Path, args: list[str]) -> str | None:
     return output or None
 
 
-def _get_remote_url(
+def _remote_web_url(remote_url: str | None) -> str | None:
+    """Convert common Git remote URL forms to a browser URL when possible."""
+    if not remote_url:
+        return None
+
+    cleaned_url = remote_url.removesuffix('.git')
+    if cleaned_url.startswith(('http://', 'https://')):
+        return cleaned_url
+
+    ssh_match = SSH_REMOTE_PATTERN.match(cleaned_url)
+    if ssh_match:
+        host, path = ssh_match.groups()
+        return f"https://{host}/{path}"
+
+    ssh_prefix = 'ssh://git@'
+    if cleaned_url.startswith(ssh_prefix):
+        return f"https://{cleaned_url[len(ssh_prefix):]}"
+
+    return None
+
+
+def _remote_url_for_name(repo_path: Path, remote_name: str) -> str | None:
+    """Return a remote URL using both modern and older Git commands."""
+    remote_url = _repo_stdout(repo_path, ['remote', 'get-url', remote_name])
+    if remote_url:
+        return remote_url
+
+    remote_url = _repo_stdout(
+        repo_path,
+        ['config', '--get', f'remote.{remote_name}.url'],
+    )
+    if remote_url:
+        return remote_url
+
+    remote_lines = _repo_stdout(repo_path, ['remote', '-v'])
+    if not remote_lines:
+        return None
+
+    prefix = f"{remote_name}\t"
+    for line in remote_lines.splitlines():
+        if not line.startswith(prefix):
+            continue
+        url = line[len(prefix):].split(maxsplit=1)[0]
+        if url:
+            return url
+    return None
+
+
+def _get_remote(
     repo_path: Path,
     branch: str | None,
-) -> str | None:
-    """Return the best available remote URL for a repository."""
+) -> tuple[str | None, str | None]:
+    """Return the best available remote name and URL for a repository."""
     if branch and branch != 'HEAD':
         upstream_remote = _repo_stdout(
             repo_path,
             ['config', '--get', f'branch.{branch}.remote'],
         )
         if upstream_remote and upstream_remote != '.':
-            upstream_url = _repo_stdout(
-                repo_path,
-                ['remote', 'get-url', upstream_remote],
-            )
+            upstream_url = _remote_url_for_name(repo_path, upstream_remote)
             if upstream_url:
-                return upstream_url
+                return upstream_remote, upstream_url
 
-    origin_url = _repo_stdout(repo_path, ['remote', 'get-url', 'origin'])
+    origin_url = _remote_url_for_name(repo_path, 'origin')
     if origin_url:
-        return origin_url
+        return 'origin', origin_url
 
     first_remote = _repo_stdout(repo_path, ['remote'])
     if not first_remote:
-        return None
+        return None, None
 
     remote_name = first_remote.splitlines()[0].strip()
     if not remote_name:
-        return None
-    return _repo_stdout(repo_path, ['remote', 'get-url', remote_name])
+        return None, None
+    return remote_name, _remote_url_for_name(repo_path, remote_name)
+
+
+def _get_remote_url(
+    repo_path: Path,
+    branch: str | None,
+) -> str | None:
+    """Return the best available remote URL for compatibility with tests."""
+    _, remote_url = _get_remote(repo_path, branch)
+    return remote_url
 
 
 def _get_git_info(repo_path: Path) -> dict[str, Any] | None:
@@ -248,6 +310,8 @@ def _get_git_info(repo_path: Path) -> dict[str, Any] | None:
         'last_commit_date': None,
         'branch': None,
         'remote': None,
+        'remote_name': None,
+        'remote_web_url': None,
         'up_to_date': True,
         'has_remote_changes': False,
         'local_changes': [],
@@ -299,7 +363,10 @@ def _get_git_info(repo_path: Path) -> dict[str, Any] | None:
                 git_info['last_commit_author'] = parts[1]
                 git_info['last_commit_date'] = parts[3]
         
-        git_info['remote'] = _get_remote_url(repo_path, git_info['branch'])
+        remote_name, remote_url = _get_remote(repo_path, git_info['branch'])
+        git_info['remote_name'] = remote_name
+        git_info['remote'] = remote_url
+        git_info['remote_web_url'] = _remote_web_url(remote_url)
         
         # Check ahead/behind (only if remote exists)
         if git_info['branch'] and git_info.get('remote'):
