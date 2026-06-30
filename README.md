@@ -1,4 +1,5 @@
 ![Experimental](https://img.shields.io/badge/stability-experimental-blue.svg)
+[![Tests](https://github.com/sdhutchins/ood-hpc-dash/actions/workflows/pytest-workflow.yml/badge.svg)](https://github.com/sdhutchins/ood-hpc-dash/actions/workflows/pytest-workflow.yml)
 
 # Open OnDemand HPC Dashboard
 
