@@ -6,17 +6,14 @@ import subprocess
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from flask import Blueprint, jsonify, render_template, request
 
 from utils import find_binary
 
 jobs_bp = Blueprint('jobs', __name__, url_prefix='/jobs')
-logger = logging.getLogger(__name__.capitalize())
-
-PARTITIONS_FILE = Path('logs/partitions.txt')
-SLURM_LOAD_FILE = Path('logs/slurm_load.txt')
+logger = logging.getLogger(__name__)
 PARTITION_METADATA_FILE = Path('config/partition_metadata.json')
 SEFF_CACHE_FILE = Path('logs/seff_cache.json')
 
@@ -45,6 +42,8 @@ SEFF_PATHS = [
     '/usr/local/bin/seff',
 ]
 JOB_ID_PATTERN = re.compile(r'^[A-Za-z0-9_.+-]+$')
+SQUEUE_FIELD_DELIMITER = '|'
+SQUEUE_OUTPUT_FORMAT = '%i|%j|%T|%P|%M|%l|%u'
 
 
 def _request_int(
@@ -68,6 +67,19 @@ def _request_int(
 def _slurm_command_env() -> dict[str, str]:
     """Return an environment with Cheaha SLURM libraries when present."""
     env = os.environ.copy()
+    current_path = env.get('PATH', '')
+    required_paths = ['/usr/bin', '/bin']
+    if current_path:
+        path_parts = current_path.split(':')
+        missing_paths = [
+            path for path in required_paths
+            if path not in path_parts
+        ]
+        if missing_paths:
+            env['PATH'] = f"{current_path}:{':'.join(missing_paths)}"
+    else:
+        env['PATH'] = ':'.join(required_paths)
+
     slurm_lib_path = Path('/cm/shared/apps/slurm/18.08.9/lib64')
     if not slurm_lib_path.exists():
         return env
@@ -80,72 +92,89 @@ def _slurm_command_env() -> dict[str, str]:
     return env
 
 
-def _call_sinfo() -> Tuple[Optional[str], Optional[str]]:
-    """
-    Call sinfo -s with absolute path and explicit environment.
-    
-    Returns:
-        Tuple of (output, error_message)
-    """
-    sinfo_path = find_binary(SINFO_PATHS)
-    if not sinfo_path:
-        return None, "sinfo binary not found in standard locations"
-    
-    try:
-        result = subprocess.run(
-            [sinfo_path, '-s'],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env={'PATH': '/usr/bin:/bin'},
-            cwd=Path.cwd(),
-        )
-        if result.returncode == 0:
-            return result.stdout, None
-        return None, f"sinfo failed: {result.stderr}"
-    except subprocess.TimeoutExpired:
-        return None, "sinfo command timed out"
-    except Exception as e:
-        return None, f"Error calling sinfo: {str(e)}"
+def _run_slurm_command(
+    search_paths: list[str],
+    args: list[str],
+    timeout: int = 30,
+) -> tuple[str | None, str | None]:
+    """Run a SLURM binary with explicit environment.
 
-
-def _call_squeue(user: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Call squeue with absolute path and explicit environment.
-    
     Args:
-        user: Optional username to filter jobs. If None, shows all jobs.
-    
+        search_paths: Candidate absolute paths for the binary
+        args: Arguments to pass after the binary path
+        timeout: Subprocess timeout in seconds
+
     Returns:
-        Tuple of (output, error_message)
+        Tuple of (stdout, error_message)
     """
-    squeue_path = find_binary(SQUEUE_PATHS)
-    if not squeue_path:
-        return None, "squeue binary not found in standard locations"
-    
-    cmd = [squeue_path, '--Format=JobID,Name,State,Partition,TimeUsed,TimeLimit,User']
-    if user:
-        cmd.extend(['-u', user])
-    
+    binary = find_binary(search_paths)
+    if not binary:
+        name = Path(search_paths[0]).name if search_paths else 'slurm'
+        return None, f"{name} binary not found in standard locations"
+
     try:
         result = subprocess.run(
-            cmd,
+            [binary, *args],
             capture_output=True,
             text=True,
-            timeout=30,
-            env={'PATH': '/usr/bin:/bin'},
+            timeout=timeout,
+            env=_slurm_command_env(),
             cwd=Path.cwd(),
         )
         if result.returncode == 0:
             return result.stdout, None
-        return None, f"squeue failed: {result.stderr}"
+        return None, f"{Path(binary).name} failed: {result.stderr}"
     except subprocess.TimeoutExpired:
-        return None, "squeue command timed out"
-    except Exception as e:
-        return None, f"Error calling squeue: {str(e)}"
+        return None, f"{Path(binary).name} command timed out"
+    except OSError as e:
+        return None, f"Error calling {Path(binary).name}: {e}"
 
 
-def _load_seff_cache() -> Dict[str, Dict[str, Any]]:
+def _call_sinfo() -> tuple[str | None, str | None]:
+    """Call sinfo -s with absolute path and explicit environment."""
+    return _run_slurm_command(SINFO_PATHS, ['-s'])
+
+
+def _call_squeue(user: str | None = None) -> tuple[str | None, str | None]:
+    """Call squeue with absolute path and explicit environment."""
+    args = ['--noheader', f'--format={SQUEUE_OUTPUT_FORMAT}']
+    if user:
+        args.extend(['-u', user])
+    return _run_slurm_command(SQUEUE_PATHS, args)
+
+
+def _parse_squeue_output(output: str) -> list[dict[str, str]]:
+    """Parse pipe-delimited squeue output without breaking spaced job names."""
+    jobs = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        fields = [
+            field.strip()
+            for field in line.split(SQUEUE_FIELD_DELIMITER, 6)
+        ]
+        if len(fields) < 6:
+            logger.debug(f"Skipping malformed squeue row: {raw_line}")
+            continue
+
+        job_id, name, state, partition, time_used, time_limit = fields[:6]
+        user = fields[6] if len(fields) > 6 else ''
+        jobs.append({
+            'id': job_id,
+            'name': name,
+            'state': state,
+            'partition': partition,
+            'time_used': time_used,
+            'time_limit': time_limit,
+            'user': user,
+        })
+
+    return jobs
+
+
+def _load_seff_cache() -> dict[str, dict[str, Any]]:
     """Load seff cache from file.
     
     Returns:
@@ -160,12 +189,12 @@ def _load_seff_cache() -> Dict[str, Dict[str, Any]]:
         if isinstance(cache, dict):
             return cache
         return {}
-    except Exception as e:
+    except (OSError, json.JSONDecodeError) as e:
         logger.warning(f"Error loading seff cache: {e}")
         return {}
 
 
-def _save_seff_cache(cache: Dict[str, Dict[str, Any]]) -> None:
+def _save_seff_cache(cache: dict[str, dict[str, Any]]) -> None:
     """Save seff cache to file.
     
     Args:
@@ -175,7 +204,7 @@ def _save_seff_cache(cache: Dict[str, Dict[str, Any]]) -> None:
         SEFF_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         with SEFF_CACHE_FILE.open('w', encoding='utf-8') as f:
             json.dump(cache, f, indent=2, ensure_ascii=False)
-    except Exception as e:
+    except (OSError, TypeError) as e:
         logger.warning(f"Error saving seff cache: {e}")
 
 
@@ -198,7 +227,7 @@ def _call_seff(
     job_id: str,
     use_cache: bool = True,
     force_refresh: bool = False,
-) -> Tuple[Optional[str], Optional[str]]:
+) -> tuple[str | None, str | None]:
     """
     Call seff to get detailed job efficiency report, with caching.
     
@@ -258,79 +287,49 @@ def _call_seff(
         if use_cache:
             _cache_seff_result(job_id, None, error_msg)
         return None, error_msg
-    except Exception as e:
+    except OSError as e:
         error_msg = f"Error calling seff: {str(e)}"
         if use_cache:
             _cache_seff_result(job_id, None, error_msg)
         return None, error_msg
 
 
-def _call_sacct(user: Optional[str] = None, max_jobs: int = 100) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Call sacct to get job history with efficiency metrics.
-    
-    Args:
-        user: Optional username to filter jobs. If None, uses current user.
-        max_jobs: Maximum number of jobs to retrieve (default 100)
-    
-    Returns:
-        Tuple of (output, error_message)
-    """
-    sacct_path = find_binary(SACCT_PATHS)
-    if not sacct_path:
-        return None, "sacct binary not found in standard locations"
-    
+def _call_sacct(user: str | None = None) -> tuple[str | None, str | None]:
+    """Call sacct to get job history with efficiency metrics."""
     if not user:
         user = os.environ.get('USER', '')
-    
-    # Calculate date 90 days ago in YYYY-MM-DD format
+
     start_date = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
-    
-    # Format: JobID,JobName,State,Partition,Start,End,Elapsed,TotalCPU,ReqCPUS,MaxRSS,AllocCPUS,CPUTime
-    # Note: CPUUtilization is not available in all SLURM versions, so we calculate it from TotalCPU
-    # Note: sacct doesn't have a -n option to limit results, so we limit in Python after parsing
-    # Use --allocations to show only job-level entries (not individual steps)
-    cmd = [
-        sacct_path,
-        '--format=JobID,JobName,State,Partition,Start,End,Elapsed,TotalCPU,ReqCPUS,MaxRSS,AllocCPUS,CPUTime',
+
+    # CPUUtilization is not available in all SLURM versions, so it is
+    # calculated from TotalCPU during parsing.
+    sacct_fields = (
+        'JobID,JobName,State,Partition,Start,End,Elapsed,TotalCPU,ReqCPUS,'
+        'MaxRSS,AllocCPUS,CPUTime'
+    )
+    return _run_slurm_command(SACCT_PATHS, [
+        f'--format={sacct_fields}',
         '--parsable2',
         '--noheader',
-        '--units=M',  # Memory in MB
-        '--allocations',  # Only show job allocations, not steps
+        '--units=M',
+        '--allocations',
         '-u', user,
-        '--starttime', start_date,  # Last 90 days
-    ]
-    
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env={'PATH': '/usr/bin:/bin'},
-            cwd=Path.cwd(),
-        )
-        if result.returncode == 0:
-            return result.stdout, None
-        return None, f"sacct failed: {result.stderr}"
-    except subprocess.TimeoutExpired:
-        return None, "sacct command timed out"
-    except Exception as e:
-        return None, f"Error calling sacct: {str(e)}"
+        '--starttime', start_date,
+    ])
 
 
-def _load_partition_metadata() -> Dict[str, Any]:
+def _load_partition_metadata() -> dict[str, Any]:
     """Load partition metadata from JSON file."""
     if not PARTITION_METADATA_FILE.exists():
         return {}
     try:
         with PARTITION_METADATA_FILE.open('r', encoding='utf-8') as f:
             return json.load(f)
-    except Exception:
+    except (OSError, json.JSONDecodeError):
         return {}
 
 
-def _parse_sinfo_output(output: str) -> List[Dict[str, Any]]:
+def _parse_sinfo_output(output: str) -> list[dict[str, Any]]:
     """
     Parse sinfo -s output into structured partition data.
     
@@ -402,7 +401,7 @@ def _parse_sinfo_output(output: str) -> List[Dict[str, Any]]:
     return partitions
 
 
-def _get_partition_info() -> Tuple[Optional[List[Dict]], Optional[str]]:
+def _get_partition_info() -> tuple[list[dict] | None, str | None]:
     """
     Get partition data by calling sinfo directly.
     
@@ -422,92 +421,15 @@ def _get_partition_info() -> Tuple[Optional[List[Dict]], Optional[str]]:
         if not partitions:
             return None, "No partition data found in sinfo output."
         return partitions, None
-    except Exception as e:
+    except (OSError, ValueError, IndexError) as e:
         error_msg = f"Error parsing sinfo output: {str(e)}"
         logger.warning(error_msg, exc_info=True)
         return None, error_msg
 
 
-def _parse_slurm_load() -> Optional[Dict[str, Any]]:
-    """Parse slurm-load output and return structured data."""
-    if not SLURM_LOAD_FILE.exists():
-        return None
-    
-    try:
-        # Check if file is stale (older than 10 minutes)
-        file_age = time.time() - SLURM_LOAD_FILE.stat().st_mtime
-        if file_age > 600:  # 10 minutes
-            return None
-        
-        with SLURM_LOAD_FILE.open('r', encoding='utf-8') as f:
-            content = f.read().strip()
-        
-        if not content:
-            return None
-        
-        # Parse the output
-        load_data = {}
-        lines = content.split('\n')
-        for line in lines:
-            line = line.strip()
-            if 'Allocated nodes:' in line:
-                load_data['allocated_nodes'] = int(line.split(':')[1].strip())
-            elif 'Idle nodes:' in line:
-                load_data['idle_nodes'] = int(line.split(':')[1].strip())
-            elif 'Total CPU cores:' in line:
-                load_data['total_cores'] = int(line.split(':')[1].strip())
-            elif 'Allocated cores:' in line:
-                load_data['allocated_cores'] = int(line.split(':')[1].strip())
-            elif 'Idle cores:' in line:
-                load_data['idle_cores'] = int(line.split(':')[1].strip())
-            elif 'Running/Pending jobs:' in line:
-                jobs_part = line.split(':')[1].strip()
-                if '/' in jobs_part:
-                    parts = jobs_part.split('/')
-                    load_data['running_jobs'] = int(parts[0].strip())
-                    load_data['pending_jobs'] = int(parts[1].strip())
-            elif '% of used cores' in line:
-                pct = line.split(':')[1].strip().replace('%', '')
-                load_data['cores_pct'] = float(pct)
-            elif '% of used nodes' in line:
-                pct = line.split(':')[1].strip().replace('%', '')
-                load_data['nodes_pct'] = float(pct)
-        
-        return load_data if load_data else None
-        
-    except Exception as e:
-        logger.warning(f"Error parsing slurm-load data: {e}", exc_info=True)
-        return None
-
-
-def _format_time_limit(timelimit: str) -> str:
-    """Format SLURM time limit to readable format."""
-    # Handle formats like "2:00:00", "2-02:00:00", "6-06:00:00"
-    if '-' in timelimit:
-        # Format: days-hours:minutes:seconds
-        parts = timelimit.split('-')
-        days = int(parts[0])
-        time_parts = parts[1].split(':')
-        hours = int(time_parts[0])
-        if days > 0:
-            if hours > 0:
-                return f"{days} days, {hours} hours"
-            return f"{days} days"
-        return f"{hours} hours"
-    else:
-        # Format: hours:minutes:seconds
-        time_parts = timelimit.split(':')
-        hours = int(time_parts[0])
-        if hours < 24:
-            return f"{hours} hours"
-        days = hours // 24
-        remaining_hours = hours % 24
-        if remaining_hours > 0:
-            return f"{days} days, {remaining_hours} hours"
-        return f"{days} days"
-
-
-def _generate_partition_reference_data(partitions: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+def _generate_partition_reference_data(
+    partitions: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
     """Generate structured partition reference data grouped by category."""
     if not PARTITION_METADATA_FILE.exists():
         return {}
@@ -515,7 +437,7 @@ def _generate_partition_reference_data(partitions: List[Dict[str, Any]]) -> Dict
     try:
         with PARTITION_METADATA_FILE.open('r', encoding='utf-8') as f:
             metadata = json.load(f)
-    except Exception as e:
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as e:
         logger.warning(f"Error loading partition metadata: {e}")
         return {}
     
@@ -547,12 +469,16 @@ def _generate_partition_reference_data(partitions: List[Dict[str, Any]]) -> Dict
     return categories
 
 
-def _parse_sacct_output(output: str) -> List[Dict[str, Any]]:
+def _parse_sacct_output(
+    output: str,
+    max_jobs: int | None = None,
+) -> list[dict[str, Any]]:
     """
     Parse sacct output and calculate efficiency metrics.
     
     Args:
         output: sacct output (parsable2 format)
+        max_jobs: Maximum number of most-recent jobs to return
     
     Returns:
         List of job dictionaries with efficiency metrics
@@ -587,7 +513,11 @@ def _parse_sacct_output(output: str) -> List[Dict[str, Any]]:
         cpu_efficiency = 0.0
         try:
             elapsed_sec = _parse_time_to_seconds(elapsed)
-            alloc_cpus_int = int(alloc_cpus) if alloc_cpus and alloc_cpus.isdigit() else 1
+            alloc_cpus_int = (
+                int(alloc_cpus)
+                if alloc_cpus and alloc_cpus.isdigit()
+                else 1
+            )
             total_cpu_sec = _parse_time_to_seconds(total_cpu)
             if elapsed_sec > 0 and alloc_cpus_int > 0:
                 cpu_efficiency = (total_cpu_sec / (elapsed_sec * alloc_cpus_int)) * 100
@@ -630,7 +560,12 @@ def _parse_sacct_output(output: str) -> List[Dict[str, Any]]:
         })
     
     # Sort by start date (most recent first)
-    jobs.sort(key=lambda x: _parse_start_date_for_sort(x.get('start', '')), reverse=True)
+    jobs.sort(
+        key=lambda x: _parse_start_date_for_sort(x.get('start', '')),
+        reverse=True,
+    )
+    if max_jobs is not None:
+        jobs = jobs[:max(max_jobs, 0)]
     
     return jobs
 
@@ -654,7 +589,7 @@ def _parse_start_date_for_sort(start_str: str) -> float:
         else:
             dt = datetime.strptime(start_str, '%Y-%m-%d')
         return dt.timestamp()
-    except Exception:
+    except (ValueError, OSError):
         return 0.0
 
 
@@ -688,7 +623,6 @@ def _parse_time_to_seconds(time_str: str) -> int:
 def jobs():
     """Render the jobs page with partition information."""
     partitions, error = _get_partition_info()
-    slurm_load_data = _parse_slurm_load()
     
     # Get current user
     username = os.environ.get('USER', '')
@@ -699,22 +633,7 @@ def jobs():
     if username:
         output, error_msg = _call_squeue(user=username)
         if not error_msg and output:
-            lines = output.strip().split('\n')
-            if len(lines) > 1:
-                for line in lines[1:]:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    parts = line.split()
-                    if len(parts) >= 6:
-                        user_jobs.append({
-                            'id': parts[0],
-                            'name': parts[1],
-                            'state': parts[2],
-                            'partition': parts[3],
-                            'time_used': parts[4],
-                            'time_limit': parts[5] if len(parts) > 5 else 'N/A',
-                        })
+            user_jobs = _parse_squeue_output(output)
         else:
             user_jobs_error = error_msg
     
@@ -726,9 +645,9 @@ def jobs():
     per_page = 10
     
     if username:
-        output, error_msg = _call_sacct(user=username, max_jobs=1000)  # Get more jobs for pagination
+        output, error_msg = _call_sacct(user=username)
         if not error_msg and output:
-            all_jobs = _parse_sacct_output(output)
+            all_jobs = _parse_sacct_output(output, max_jobs=1000)
             # Jobs are already sorted by most recent first in _parse_sacct_output
             total_history = len(all_jobs)
             # Apply pagination
@@ -751,17 +670,6 @@ def jobs():
             'available_nodes': sum(p['idle'] for p in partitions),
             'allocated_nodes': sum(p['allocated'] for p in partitions),
         }
-        # Add slurm_load data to summary if available
-        if slurm_load_data:
-            summary.update({
-                'total_cores': slurm_load_data.get('total_cores'),
-                'allocated_cores': slurm_load_data.get('allocated_cores'),
-                'idle_cores': slurm_load_data.get('idle_cores'),
-                'running_jobs': slurm_load_data.get('running_jobs'),
-                'pending_jobs': slurm_load_data.get('pending_jobs'),
-                'cores_pct': slurm_load_data.get('cores_pct'),
-                'nodes_pct': slurm_load_data.get('nodes_pct'),
-            })
     
     # Calculate pagination info
     total_pages = (total_history + per_page - 1) // per_page if total_history > 0 else 0
@@ -804,45 +712,12 @@ def jobs_status():
             'pending': 0,
         })
     
-    # Parse squeue output
-    lines = output.strip().split('\n')
-    if len(lines) < 2:
-        return jsonify({
-            'jobs': [],
-            'running': 0,
-            'pending': 0,
-        })
-    
-    jobs = []
+    jobs = _parse_squeue_output(output)
     running = 0
     pending = 0
-    
-    # Skip header line
-    for line in lines[1:]:
-        line = line.strip()
-        if not line:
-            continue
-        
-        parts = line.split()
-        if len(parts) < 6:
-            continue
-        
-        job_id = parts[0]
-        name = parts[1]
-        state = parts[2]
-        partition = parts[3]
-        time_used = parts[4]
-        time_limit = parts[5] if len(parts) > 5 else 'N/A'
-        
-        jobs.append({
-            'id': job_id,
-            'name': name,
-            'state': state,
-            'partition': partition,
-            'time_used': time_used,
-            'time_limit': time_limit,
-        })
-        
+
+    for job in jobs:
+        state = job['state']
         if state in ('RUNNING', 'R'):
             running += 1
         elif state in ('PENDING', 'PD'):
@@ -884,7 +759,7 @@ def jobs_history():
     per_page = _request_int('per_page', 10, max_value=100)
     offset = (page - 1) * per_page
     
-    output, error = _call_sacct(user=username, max_jobs=1000)  # Get more jobs for pagination
+    output, error = _call_sacct(user=username)
     if error:
         return jsonify({'error': error}), 500
     
@@ -897,7 +772,7 @@ def jobs_history():
         })
     
     # Parse all jobs
-    all_jobs = _parse_sacct_output(output)
+    all_jobs = _parse_sacct_output(output, max_jobs=1000)
     total = len(all_jobs)
     
     # Apply pagination
@@ -968,7 +843,7 @@ def job_efficiency(job_id: str):
                 seff_data['parsed']['wall_clock_time'] = value
             elif 'State' in key:
                 seff_data['parsed']['state'] = value
-            elif 'Nodes' in key and 'parsed' not in seff_data.get('parsed', {}).get('nodes', ''):
+            elif 'Nodes' in key and 'nodes' not in seff_data['parsed']:
                 seff_data['parsed']['nodes'] = value
             elif 'Cores per node' in key:
                 seff_data['parsed']['cores_per_node'] = value

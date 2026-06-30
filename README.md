@@ -1,4 +1,5 @@
 ![Experimental](https://img.shields.io/badge/stability-experimental-blue.svg)
+[![Tests](https://github.com/sdhutchins/ood-hpc-dash/actions/workflows/pytest-workflow.yml/badge.svg)](https://github.com/sdhutchins/ood-hpc-dash/actions/workflows/pytest-workflow.yml)
 
 # Open OnDemand HPC Dashboard
 
@@ -11,7 +12,6 @@ A Flask app that serves as a dashboard on the Cheaha HPC cluster, providing an i
 - Browse and search available software modules with category filtering and version management
 - Monitor cluster partitions, job resources, and partition availability with real-time status
 - View and manage conda environments organized by location (Home, Project, Scratch, etc.)
-- View HTML files from whitelisted directories
 - Integrated web-based code editor for file editing
 
 ## Installation
@@ -44,6 +44,8 @@ The script also creates `bin/python`, which Passenger uses instead of system Pyt
 
 ## Local Docker Usage
 
+Docker is provided for local debugging only. The app is deployed through Open OnDemand/Passenger.
+
 Build the image:
 
 ```bash
@@ -53,7 +55,24 @@ docker build -t ood-hpc-dash .
 Run the app locally on `http://localhost:5002`:
 
 ```bash
-docker run --rm -p 5002:5002 ood-hpc-dash
+docker run --rm -p 127.0.0.1:5002:5002 ood-hpc-dash
+```
+
+Run tests in Docker:
+
+```bash
+docker run --rm ood-hpc-dash pytest
+```
+
+## Running Tests
+
+Install development dependencies and run the test suite:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest
 ```
 
 ## Learn More

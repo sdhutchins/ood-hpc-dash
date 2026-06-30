@@ -48,12 +48,12 @@ def _load_envs_from_conda_list() -> tuple[list[dict[str, str]], str | None]:
 def _categorize_env(path: str) -> str:
     """Derive a friendly category from the env path."""
     lower = path.lower()
+    if lower.startswith("/scratch") or "/scratch/" in lower:
+        return "Scratch"
     if "mamba" in lower:
         return "Mamba"
     if ".conda" in lower:
         return "Conda"
-    if lower.startswith("/scratch") or "/scratch/" in lower:
-        return "Scratch"
     if "snakemake" in lower:
         return "Snakemake"
     if lower.startswith("/home"):
@@ -134,6 +134,18 @@ def _read_env_history(env_path: str) -> tuple[str | None, str | None]:
     lines.extend(f"  - {dependency}" for dependency in dependencies)
     return "\n".join(lines) + "\n", None
 
+
+def _resolve_env_directory(raw_path: str) -> Path | None:
+    """Resolve env paths before comparing user input to configured envs."""
+    try:
+        resolved_path = Path(raw_path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+
+    if not resolved_path.is_dir():
+        return None
+    return resolved_path
+
 # Category display metadata
 CATEGORY_META = {
     "Snakemake": {"title": "Snakemake Conda Environments", "icon": "fa-folder"},
@@ -169,13 +181,22 @@ def env_history() -> tuple[object, int] | object:
         return jsonify({"error": "Environment path is required."}), 400
 
     env_path = env_path.strip()
-    envs_list, _ = _load_envs_from_conda_list()
-    known_env_paths = {env["path"] for env in envs_list}
-    if env_path not in known_env_paths:
+    requested_env_path = _resolve_env_directory(env_path)
+    if requested_env_path is None:
         return jsonify({"error": "Environment path is not configured."}), 403
 
-    output, error = _read_env_history(env_path)
+    envs_list, _ = _load_envs_from_conda_list()
+    known_env_paths = {
+        resolved_env_path
+        for env in envs_list
+        if (resolved_env_path := _resolve_env_directory(env["path"]))
+        is not None
+    }
+    if requested_env_path not in known_env_paths:
+        return jsonify({"error": "Environment path is not configured."}), 403
+
+    output, error = _read_env_history(str(requested_env_path))
     if error is not None:
         return jsonify({"error": error}), 500
 
-    return jsonify({"path": env_path, "output": output})
+    return jsonify({"path": str(requested_env_path), "output": output})

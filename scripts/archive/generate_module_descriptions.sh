@@ -1,5 +1,5 @@
 #!/bin/bash
-# Generate module descriptions and update config/module_categories.json
+# Archived: module descriptions are now parsed by the in-app Lmod spider flow.
 
 OUTPUT_FILE="config/module_categories.json"
 
