@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import re
-import subprocess
 import threading
 import time
 from collections.abc import Iterator
@@ -14,25 +13,20 @@ from typing import Any
 
 from flask import Blueprint, Response, jsonify, render_template
 
-from utils import find_binary
-
 modules_bp = Blueprint('modules', __name__, url_prefix='/modules')
 logger = logging.getLogger(__name__)
 
 CATEGORIES_FILE = Path('config/module_categories.json')
 MODULE_REFRESH_LOCK_FILE = Path('logs/modules_refresh.lock')
-MODULE_SPIDER_COMMAND = 'module --redirect spider'
+
+SPIDER_CACHE_DEFAULT = Path('/share/apps/sysCacheDir/spiderT.lua')
+SPIDER_CACHE_ENV_VAR = 'OOD_HPC_DASH_SPIDER_CACHE'
 
 _modules_cache: list[dict[str, Any]] | None = None
 _modules_cache_timestamp: float | None = None
 
 _streaming_lock = threading.Lock()
 _streaming_in_progress = False
-
-BASH_PATHS = [
-    '/bin/bash',
-    '/usr/bin/bash',
-]
 
 
 @contextmanager
@@ -52,83 +46,237 @@ def _module_refresh_file_lock() -> Iterator[bool]:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def _call_module_command(
-    command: str,
-    timeout: int = 30,
-) -> tuple[str | None, str | None]:
+def _get_spider_cache_path() -> Path | None:
+    """Return the Lmod spider cache file path if it exists."""
+    env_path = os.environ.get(SPIDER_CACHE_ENV_VAR)
+    if env_path:
+        candidate = Path(env_path)
+        if candidate.is_file():
+            return candidate
+        logger.warning(
+            "%s=%s does not exist; trying default",
+            SPIDER_CACHE_ENV_VAR,
+            env_path,
+        )
+
+    if SPIDER_CACHE_DEFAULT.is_file():
+        return SPIDER_CACHE_DEFAULT
+
+    return None
+
+
+def _parse_lua_string(text: str, pos: int) -> tuple[str, int]:
+    """Parse a quoted Lua string starting at pos, return (value, new_pos)."""
+    quote = text[pos]
+    end = pos + 1
+    while end < len(text):
+        ch = text[end]
+        if ch == '\\':
+            end += 2
+            continue
+        if ch == quote:
+            return text[pos + 1:end], end + 1
+        end += 1
+    return text[pos + 1:end], end
+
+
+def _parse_lua_table(text: str, pos: int) -> tuple[dict | list, int]:
+    """Parse a Lua table literal into a Python dict or list.
+
+    Handles the subset of Lua syntax found in Lmod spiderT cache files:
+    string keys (["key"] or bare identifiers), string/number/bool values,
+    and nested tables. Array-style tables (sequential integer keys) are
+    returned as lists.
     """
-    Call a module command using bash -lc with explicit environment.
+    pos += 1  # skip opening {
+    result: dict[str, object] = {}
+    array_items: list[object] = []
+    has_string_keys = False
+    idx = 0
 
-    Since module is a shell function, we must use a login shell and source lmod init.
+    while pos < len(text):
+        # skip whitespace and commas
+        while pos < len(text) and text[pos] in ' \t\n\r,':
+            pos += 1
 
-    Args:
-        command: Module command to run (e.g., 'module --redirect spider')
-        timeout: Timeout in seconds
-
-    Returns:
-        Tuple of (output, error_message)
-    """
-    bash_path = find_binary(BASH_PATHS)
-    if not bash_path:
-        return None, "bash binary not found in standard locations"
-
-    # Build command that sources lmod init first
-    lmod_init_paths = [
-        '/usr/share/lmod/lmod/init/bash',
-        '/etc/profile.d/modules.sh',
-    ]
-
-    # Find lmod init script
-    lmod_init = None
-    for path in lmod_init_paths:
-        if os.path.exists(path):
-            lmod_init = path
+        if pos >= len(text) or text[pos] == '}':
+            pos += 1
             break
 
-    if lmod_init:
-        # Source lmod init, then run the command
-        full_command = f'source {lmod_init} && {command}'
-    else:
-        # Fallback: try without explicit sourcing (might work if in .bashrc)
-        full_command = command
+        # skip single-line comments
+        if text[pos:pos + 2] == '--':
+            nl = text.find('\n', pos)
+            pos = nl + 1 if nl != -1 else len(text)
+            continue
 
-    # Preserve some environment variables that might be needed
-    env = os.environ.copy()
-    # Ensure basic PATH is set
-    env['PATH'] = '/usr/bin:/bin:/usr/local/bin'
-    # Preserve HOME and USER if they exist
-    if 'HOME' not in env:
-        env['HOME'] = os.path.expanduser('~')
+        key: str | None = None
 
+        # ["string-key"] = value
+        if text[pos] == '[' and pos + 1 < len(text) and text[pos + 1] in '"\'':
+            key, pos = _parse_lua_string(text, pos + 1)
+            # skip ] =
+            while pos < len(text) and text[pos] in '] \t=':
+                pos += 1
+            has_string_keys = True
+
+        # bare_key = value
+        elif text[pos].isalpha() or text[pos] == '_':
+            end = pos
+            while end < len(text) and (text[end].isalnum() or text[end] == '_'):
+                end += 1
+            key = text[pos:end]
+            pos = end
+            while pos < len(text) and text[pos] in ' \t=':
+                pos += 1
+            has_string_keys = True
+
+        # parse value
+        if pos >= len(text):
+            break
+
+        value: object
+        if text[pos] == '{':
+            value, pos = _parse_lua_table(text, pos)
+        elif text[pos] in '"\'':
+            value, pos = _parse_lua_string(text, pos)
+        elif text[pos:pos + 4] == 'true':
+            value, pos = True, pos + 4
+        elif text[pos:pos + 5] == 'false':
+            value, pos = False, pos + 5
+        elif text[pos] == '-' or text[pos].isdigit():
+            end = pos + 1
+            while end < len(text) and (text[end].isdigit() or text[end] in '.eE+-'):
+                end += 1
+            try:
+                num_str = text[pos:end]
+                value = int(num_str) if '.' not in num_str else float(num_str)
+            except ValueError:
+                value = text[pos:end]
+            pos = end
+        else:
+            pos += 1
+            continue
+
+        if key is not None:
+            result[key] = value
+        else:
+            array_items.append(value)
+            idx += 1
+
+    if not has_string_keys and array_items:
+        return array_items, pos
+    if array_items and not result:
+        return array_items, pos
+    return result, pos
+
+
+def _parse_spider_cache(
+    cache_path: Path,
+) -> dict[str, dict[str, object]] | None:
+    """Read spiderT.lua and convert it to the modules dict format.
+
+    Returns the same shape as _parse_module_spider_output:
+    {family_name: {'versions': [str, ...], 'description': str}}
+    """
     try:
-        result = subprocess.run(
-            [bash_path, '-lc', full_command],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-            cwd=Path.cwd(),
-        )
-        if result.returncode == 0:
-            # Some module commands output to stderr instead of stdout.
-            # Check both streams
-            output = result.stdout.strip()
-            if not output and result.stderr:
-                # If stdout is empty but stderr has content, use stderr
-                output = result.stderr.strip()
-                logger.debug(f"module command output was in stderr, using it")
+        raw = cache_path.read_text(encoding='utf-8', errors='replace')
+    except OSError as exc:
+        logger.warning("Unable to read spider cache %s: %s", cache_path, exc)
+        return None
 
-            if not output:
-                return None, "module command returned empty output"
-            return output, None
-        error_msg = result.stderr if result.stderr else f"Exit code: {result.returncode}"
-        return None, f"module command failed: {error_msg}"
-    except subprocess.TimeoutExpired:
-        # subprocess.run with timeout should already kill the process
-        # Don't log timeouts as warnings - they're expected for some slow modules
-        return None, f"module command timed out after {timeout}s"
-    except OSError as e:
-        return None, f"Error calling module command: {str(e)}"
+    # Locate the spiderT table
+    marker = 'spiderT = {'
+    start = raw.find(marker)
+    if start == -1:
+        logger.warning("No spiderT table found in %s", cache_path)
+        return None
+
+    table_start = raw.index('{', start)
+    try:
+        spider_table, _ = _parse_lua_table(raw, table_start)
+    except (IndexError, ValueError, RecursionError) as exc:
+        logger.warning("Failed to parse Lua table in %s: %s", cache_path, exc)
+        return None
+
+    if not isinstance(spider_table, dict):
+        logger.warning("spiderT is not a dict in %s", cache_path)
+        return None
+
+    # Flatten: spiderT[modulepath_dir][family_name].fileT[full_name]
+    modules: dict[str, dict[str, object]] = {}
+
+    for mpath_data in spider_table.values():
+        if not isinstance(mpath_data, dict):
+            continue
+
+        for family_name, family_data in mpath_data.items():
+            if not isinstance(family_data, dict):
+                continue
+
+            file_table = family_data.get('fileT', {})
+            if not isinstance(file_table, dict):
+                continue
+
+            if family_name not in modules:
+                modules[family_name] = {'versions': [], 'description': ''}
+
+            entry = modules[family_name]
+            versions = entry['versions']
+            if not isinstance(versions, list):
+                continue
+
+            for full_name, version_data in file_table.items():
+                if not isinstance(version_data, dict):
+                    continue
+
+                if '/' in full_name:
+                    versions.append(full_name)
+
+                # Extract description from whatis array
+                if not entry.get('description'):
+                    whatis = version_data.get('whatis')
+                    if isinstance(whatis, list) and whatis:
+                        desc = str(whatis[0]).strip()
+                        if desc:
+                            entry['description'] = desc
+                    elif isinstance(whatis, str) and whatis.strip():
+                        entry['description'] = whatis.strip()
+
+            # Also check dirT for sub-hierarchy modules
+            dir_table = family_data.get('dirT', {})
+            if isinstance(dir_table, dict):
+                for dir_data in dir_table.values():
+                    if not isinstance(dir_data, dict):
+                        continue
+                    sub_file_table = dir_data.get('fileT', {})
+                    if not isinstance(sub_file_table, dict):
+                        continue
+                    for full_name, version_data in sub_file_table.items():
+                        if '/' in full_name:
+                            versions.append(full_name)
+                        if not entry.get('description') and isinstance(
+                            version_data, dict
+                        ):
+                            whatis = version_data.get('whatis')
+                            if isinstance(whatis, list) and whatis:
+                                entry['description'] = str(whatis[0]).strip()
+
+    # Deduplicate and sort versions
+    for entry in modules.values():
+        versions = entry.get('versions')
+        if isinstance(versions, list):
+            entry['versions'] = sorted(
+                set(versions), key=_natural_sort_key
+            )
+        if not entry.get('description'):
+            entry['description'] = ''
+
+    logger.info(
+        "Parsed %d module families from spider cache %s",
+        len(modules),
+        cache_path,
+    )
+    return modules
 
 
 def _load_descriptions_cache() -> dict[str, str]:
@@ -197,113 +345,6 @@ def _save_descriptions_cache(cache: dict[str, str]) -> None:
         logger.debug(f"Saved {len(descriptions)} descriptions to module_categories.json")
     except (OSError, TypeError) as e:
         logger.warning(f"Error saving descriptions to module_categories.json: {e}")
-
-
-def _new_module_entry() -> dict[str, object]:
-    """Return the internal record used while parsing spider output."""
-    return {'versions': [], 'description': ''}
-
-
-def _add_versions(module_entry: dict[str, object], version_text: str) -> None:
-    """Append module versions parsed from a comma-separated spider line."""
-    versions = module_entry['versions']
-    if not isinstance(versions, list):
-        return
-
-    for token in version_text.split(','):
-        version = token.strip()
-        if not version or version == '...' or version.endswith('...'):
-            continue
-        if '/' in version:
-            versions.append(version)
-
-
-def _set_description(
-    module_entry: dict[str, object],
-    description_lines: list[str],
-) -> None:
-    """Store normalized description text for one parsed module."""
-    description = ' '.join(description_lines).strip()
-    if description:
-        module_entry['description'] = description
-
-
-def _parse_module_spider_output(output: str) -> dict[str, dict[str, object]]:
-    """
-    Parse cache-backed `module --redirect spider` output.
-
-    The normal spider output carries module families, versions, and short
-    descriptions. Reading that single command lets Lmod use its spider cache
-    instead of forcing this app to issue one detail command per module.
-    """
-    modules: dict[str, dict[str, object]] = {}
-    current_family: str | None = None
-    description_lines: list[str] = []
-    parser_state: str | None = None
-
-    for raw_line in output.splitlines():
-        line = raw_line.rstrip()
-        stripped = line.strip()
-        if not stripped or stripped.startswith('---'):
-            continue
-
-        indent = len(line) - len(line.lstrip())
-        entry_match = re.match(r'^\s{2}([^:\s][^:]*?):\s*(.*)$', line)
-        if entry_match and 'The following' not in stripped:
-            if current_family is not None:
-                _set_description(modules[current_family], description_lines)
-
-            current_family = entry_match.group(1).strip()
-            modules.setdefault(current_family, _new_module_entry())
-            _add_versions(modules[current_family], entry_match.group(2))
-            description_lines = []
-            parser_state = 'description'
-            continue
-
-        if current_family is None:
-            continue
-
-        if stripped.startswith('Description:'):
-            parser_state = 'description'
-            description = stripped.split('Description:', 1)[1].strip()
-            if description:
-                description_lines.append(description)
-            continue
-
-        if stripped == 'Versions:':
-            parser_state = 'versions'
-            continue
-
-        if stripped.startswith((
-            'Other possible modules',
-            'You will need',
-            'Help:',
-            'Names marked',
-        )):
-            parser_state = None
-            continue
-
-        if parser_state == 'versions':
-            _add_versions(modules[current_family], stripped)
-            continue
-
-        if parser_state == 'description' and indent >= 4:
-            description_lines.append(stripped)
-
-    if current_family is not None:
-        _set_description(modules[current_family], description_lines)
-
-    for family_name, module_entry in modules.items():
-        versions = module_entry['versions']
-        if isinstance(versions, list):
-            module_entry['versions'] = sorted(
-                set(versions),
-                key=_natural_sort_key,
-            )
-        if not module_entry.get('description'):
-            module_entry['description'] = ''
-
-    return modules
 
 
 def _module_base_name(family_name: str, versions: list[str]) -> str:
@@ -407,38 +448,40 @@ def _cache_spider_descriptions(
 
 def _get_all_modules_streaming() -> Iterator[dict[str, object]]:
     """
-    Stream module records parsed from one cache-backed Lmod spider command.
+    Stream module records, preferring the spider cache file over subprocess.
 
     Yields:
         Dict with 'type' ('progress', 'module', 'complete', 'error').
     """
-    try:
+    yield {
+        'type': 'progress',
+        'message': 'Reading Lmod spider cache...',
+        'total': 0,
+        'current': 0,
+    }
+
+    cache_path = _get_spider_cache_path()
+    if not cache_path:
         yield {
-            'type': 'progress',
-            'message': 'Fetching module list from Lmod spider cache...',
-            'total': 0,
-            'current': 0,
+            'type': 'error',
+            'message': (
+                f'Lmod spider cache not found at {SPIDER_CACHE_DEFAULT} '
+                f'(override with {SPIDER_CACHE_ENV_VAR})'
+            ),
         }
+        return
 
-        output, error = _call_module_command(MODULE_SPIDER_COMMAND, timeout=60)
-        if error:
-            logger.error(f"Error calling {MODULE_SPIDER_COMMAND}: {error}")
-            yield {'type': 'error', 'message': f'Failed to get module list: {error}'}
-            return
-
-        if not output or not output.strip():
-            logger.error(f"{MODULE_SPIDER_COMMAND} returned empty output")
-            yield {
-                'type': 'error',
-                'message': f'{MODULE_SPIDER_COMMAND} returned empty output',
-            }
-            return
+    try:
+        modules_dict = _parse_spider_cache(cache_path)
     except (OSError, ValueError, TypeError) as e:
-        logger.error(f"Exception getting module list: {e}", exc_info=True)
+        logger.error(f"Exception reading spider cache: {e}", exc_info=True)
         yield {'type': 'error', 'message': f'Exception: {str(e)}'}
         return
 
-    modules_dict = _parse_module_spider_output(output)
+    if not modules_dict:
+        yield {'type': 'error', 'message': f'Failed to parse {cache_path}'}
+        return
+
     grouped_modules = _module_records_from_spider_data(modules_dict)
     total_modules = len(grouped_modules)
 
@@ -706,11 +749,8 @@ def refresh_status():
         return jsonify({'in_progress': _streaming_in_progress})
 
 
-def _preload_modules_cache():
-    """
-    Preload modules cache on app startup from cache-backed Lmod spider output.
-    This ensures modules are ready immediately when user visits the modules page.
-    """
+def _preload_modules_cache() -> None:
+    """Preload modules cache on startup by reading the Lmod spider cache."""
     global _modules_cache, _modules_cache_timestamp
 
     logger.info("Preloading modules cache on startup...")
@@ -723,37 +763,31 @@ def _preload_modules_cache():
                 )
                 return
 
-            output, error = _call_module_command(
-                MODULE_SPIDER_COMMAND,
-                timeout=60,
-            )
-            if error:
-                logger.warning(f"Failed to preload modules cache: {error}")
-                return
-
-            if not output or not output.strip():
+            cache_path = _get_spider_cache_path()
+            if not cache_path:
                 logger.warning(
-                    f"{MODULE_SPIDER_COMMAND} returned empty output during "
-                    "preload"
+                    "Lmod spider cache not found at %s (override with %s)",
+                    SPIDER_CACHE_DEFAULT,
+                    SPIDER_CACHE_ENV_VAR,
                 )
                 return
 
-            modules_dict = _parse_module_spider_output(output)
+            modules_dict = _parse_spider_cache(cache_path)
+            if not modules_dict:
+                logger.warning("Failed to parse spider cache at %s", cache_path)
+                return
+
             grouped_modules = _module_records_from_spider_data(modules_dict)
             _cache_spider_descriptions(modules_dict)
-
-            logger.info(
-                f"Preloaded {len(grouped_modules)} module families from "
-                f"{MODULE_SPIDER_COMMAND}"
-            )
 
             _modules_cache = grouped_modules
             _modules_cache_timestamp = time.time()
 
             total_versions = sum(len(m['versions']) for m in grouped_modules)
             logger.info(
-                "Modules cache preloaded successfully: "
-                f"{len(grouped_modules)} modules, {total_versions} total versions"
+                "Modules cache preloaded: %d families, %d total versions",
+                len(grouped_modules),
+                total_versions,
             )
 
     except (OSError, ValueError, TypeError) as e:

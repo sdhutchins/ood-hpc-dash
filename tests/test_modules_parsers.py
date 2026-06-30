@@ -2,34 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from blueprints.modules import (
     _categorize_module,
     _natural_sort_key,
-    _parse_module_spider_output,
+    _parse_spider_cache,
 )
-
-SAMPLE_SPIDER_OUTPUT = """
-The following modules match your search criteria:
-  gcc: gcc/11.4.0, gcc/12.2.0
-    Description:
-      GNU Compiler Collection
-  python: python/3.10.12, python/3.11.4
-    Description:
-      Python language runtime
-"""
-
-
-def test_parse_module_spider_output_extracts_versions_and_descriptions() -> None:
-    modules = _parse_module_spider_output(SAMPLE_SPIDER_OUTPUT)
-
-    assert set(modules) == {"gcc", "python"}
-    assert modules["gcc"]["versions"] == ["gcc/11.4.0", "gcc/12.2.0"]
-    assert modules["python"]["versions"] == [
-        "python/3.10.12",
-        "python/3.11.4",
-    ]
-    assert "GNU Compiler Collection" in str(modules["gcc"]["description"])
-    assert "Python language runtime" in str(modules["python"]["description"])
 
 
 def test_natural_sort_key_orders_numeric_versions() -> None:
@@ -53,3 +32,52 @@ def test_categorize_module_uses_exact_and_prefix_matches() -> None:
         == "Research Computing modules"
     )
     assert _categorize_module("unknown-module", categories) == "Misc"
+
+
+SAMPLE_SPIDER_LUA = """\
+spiderT = {
+  ["/apps/modules/all"] = {
+    ["gcc"] = {
+      fileT = {
+        ["gcc/11.4.0"] = {
+          Version = "11.4.0",
+          whatis = {"GNU Compiler Collection includes C, C++, Fortran"},
+        },
+        ["gcc/12.2.0"] = {
+          Version = "12.2.0",
+          whatis = {"GNU Compiler Collection includes C, C++, Fortran"},
+        },
+      },
+    },
+    ["CUDA"] = {
+      fileT = {
+        ["CUDA/11.8.0"] = {
+          Version = "11.8.0",
+          whatis = {"CUDA toolkit"},
+        },
+      },
+    },
+  },
+}
+"""
+
+
+def test_parse_spider_cache_extracts_modules(tmp_path: Path) -> None:
+    lua_file = tmp_path / "spiderT.lua"
+    lua_file.write_text(SAMPLE_SPIDER_LUA)
+
+    modules = _parse_spider_cache(lua_file)
+
+    assert modules is not None
+    assert "gcc" in modules
+    assert "CUDA" in modules
+    assert modules["gcc"]["versions"] == ["gcc/11.4.0", "gcc/12.2.0"]
+    assert modules["CUDA"]["versions"] == ["CUDA/11.8.0"]
+    assert "GNU Compiler" in str(modules["gcc"]["description"])
+
+
+def test_parse_spider_cache_returns_none_for_missing_file(
+    tmp_path: Path,
+) -> None:
+    result = _parse_spider_cache(tmp_path / "nonexistent.lua")
+    assert result is None
