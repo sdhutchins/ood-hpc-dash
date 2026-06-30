@@ -8,7 +8,7 @@ import time
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from flask import Blueprint, Response, jsonify, render_template
 
@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 CATEGORIES_FILE = Path('config/module_categories.json')
 MODULE_SPIDER_COMMAND = 'module --redirect spider'
 
-_modules_cache: Optional[List[Dict[str, Any]]] = None
-_modules_cache_timestamp: Optional[float] = None
+_modules_cache: list[dict[str, Any]] | None = None
+_modules_cache_timestamp: float | None = None
 
 _streaming_lock = threading.Lock()
 _streaming_in_progress = False
@@ -32,7 +32,10 @@ BASH_PATHS = [
 ]
 
 
-def _call_module_command(command: str, timeout: int = 30) -> Tuple[Optional[str], Optional[str]]:
+def _call_module_command(
+    command: str,
+    timeout: int = 30,
+) -> tuple[str | None, str | None]:
     """
     Call a module command using bash -lc with explicit environment.
     
@@ -104,11 +107,11 @@ def _call_module_command(command: str, timeout: int = 30) -> Tuple[Optional[str]
         # subprocess.run with timeout should already kill the process
         # Don't log timeouts as warnings - they're expected for some slow modules
         return None, f"module command timed out after {timeout}s"
-    except Exception as e:
+    except OSError as e:
         return None, f"Error calling module command: {str(e)}"
 
 
-def _load_descriptions_cache() -> Dict[str, str]:
+def _load_descriptions_cache() -> dict[str, str]:
     """Load module descriptions from module_categories.json.
     
     Returns:
@@ -127,12 +130,12 @@ def _load_descriptions_cache() -> Dict[str, str]:
                 logger.debug(f"Loaded {len(descriptions)} cached descriptions from module_categories.json")
                 return descriptions
         return {}
-    except Exception as e:
+    except (OSError, json.JSONDecodeError) as e:
         logger.warning(f"Error loading descriptions from module_categories.json: {e}")
         return {}
 
 
-def _save_descriptions_cache(cache: Dict[str, str]) -> None:
+def _save_descriptions_cache(cache: dict[str, str]) -> None:
     """Save module descriptions to module_categories.json, preserving existing categories.
     
     Args:
@@ -147,8 +150,8 @@ def _save_descriptions_cache(cache: Dict[str, str]) -> None:
             try:
                 with CATEGORIES_FILE.open('r', encoding='utf-8') as f:
                     existing_data = json.load(f)
-            except Exception:
-                pass
+            except (OSError, json.JSONDecodeError) as e:
+                logger.warning(f"Unable to read existing module categories: {e}")
         
         # Ensure existing_data is a dict
         if not isinstance(existing_data, dict):
@@ -172,7 +175,7 @@ def _save_descriptions_cache(cache: Dict[str, str]) -> None:
         with CATEGORIES_FILE.open('w', encoding='utf-8') as f:
             json.dump(combined_data, f, indent=4, ensure_ascii=False)
         logger.debug(f"Saved {len(descriptions)} descriptions to module_categories.json")
-    except Exception as e:
+    except (OSError, TypeError) as e:
         logger.warning(f"Error saving descriptions to module_categories.json: {e}")
 
 
@@ -410,7 +413,7 @@ def _get_all_modules_streaming() -> Iterator[dict[str, object]]:
                 'message': f'{MODULE_SPIDER_COMMAND} returned empty output',
             }
             return
-    except Exception as e:
+    except (OSError, ValueError, TypeError) as e:
         logger.error(f"Exception getting module list: {e}", exc_info=True)
         yield {'type': 'error', 'message': f'Exception: {str(e)}'}
         return
@@ -475,7 +478,7 @@ def _load_categories():
             categories = {k: v for k, v in data.items() if k != 'descriptions'}
             return categories
         return None
-    except Exception as e:
+    except (OSError, json.JSONDecodeError) as e:
         logger.error(f"Error loading categories: {e}", exc_info=True)
         return None
 
@@ -538,7 +541,7 @@ def _categorize_module(module_name, categories_config):
     # Default to Misc for unmatched modules
     return 'Misc'
 
-def _get_cached_modules() -> List[Dict[str, Any]]:
+def _get_cached_modules() -> list[dict[str, Any]]:
     """Get modules from cache. Returns empty list if cache is not ready."""
     global _modules_cache
     
@@ -548,13 +551,6 @@ def _get_cached_modules() -> List[Dict[str, Any]]:
     # Cache not ready yet - return empty list
     # Preload will populate it on startup
     return []
-
-
-def _clear_modules_cache():
-    """Clear the modules cache."""
-    global _modules_cache, _modules_cache_timestamp
-    _modules_cache = None
-    _modules_cache_timestamp = None
 
 
 def _modules_by_category(
@@ -575,7 +571,7 @@ def _modules_by_category(
 
 
 @modules_bp.app_template_filter('timestamp_to_datetime')
-def timestamp_to_datetime_filter(timestamp: Optional[float]) -> str:
+def timestamp_to_datetime_filter(timestamp: float | None) -> str:
     """Convert Unix timestamp to formatted datetime string."""
     if not timestamp:
         return 'Unknown'
@@ -634,7 +630,7 @@ def descriptions_status():
             'file_mtime': file_mtime,
             'loading': _streaming_in_progress,
         })
-    except Exception as e:
+    except OSError as e:
         logger.error(f"Error getting descriptions status: {e}")
         return jsonify({
             'file_exists': False,
@@ -671,7 +667,7 @@ def descriptions_update():
             'descriptions': base_name_to_description,
             'count': len(base_name_to_description),
         })
-    except Exception as e:
+    except (OSError, json.JSONDecodeError, TypeError) as e:
         logger.error(f"Error getting descriptions update: {e}")
         return jsonify({
             'descriptions': {},
@@ -682,26 +678,108 @@ def descriptions_update():
 
 @modules_bp.route('/refresh-start', methods=['POST'])
 def refresh_start():
-    """Start refresh process by clearing cache."""
+    """Confirm a refresh can start before the client opens the SSE stream."""
     with _streaming_lock:
         if _streaming_in_progress:
             return jsonify({'error': 'Refresh already in progress'}), 409
-        _clear_modules_cache()
     
     return jsonify({'status': 'started'})
+
+
+def _descriptions_by_module_name(
+    grouped_modules: list[dict[str, object]],
+) -> dict[str, str]:
+    """Return non-empty descriptions keyed by frontend module name."""
+    return {
+        str(module['name']): str(module.get('description') or '')
+        for module in grouped_modules
+        if module.get('description')
+    }
+
+
+def _apply_descriptions_to_modules_cache(
+    descriptions_by_name: dict[str, str],
+) -> None:
+    """Apply fresh descriptions to the in-memory module cache."""
+    global _modules_cache, _modules_cache_timestamp
+
+    if _modules_cache is None:
+        return
+
+    updated_modules = []
+    for module in _modules_cache:
+        module_name = str(module.get('name', ''))
+        updated_module = dict(module)
+        description = descriptions_by_name.get(module_name)
+        if description:
+            updated_module['description'] = description
+        updated_modules.append(updated_module)
+
+    _modules_cache = updated_modules
+    _modules_cache_timestamp = time.time()
+
+
+def _load_descriptions_background() -> None:
+    """Load module descriptions without requiring an active SSE client."""
+    global _streaming_in_progress
+
+    try:
+        output, error = _call_module_command(MODULE_SPIDER_COMMAND, timeout=60)
+        if error:
+            logger.error(f"Failed to load module descriptions: {error}")
+            return
+
+        if not output or not output.strip():
+            logger.error(f"{MODULE_SPIDER_COMMAND} returned empty output")
+            return
+
+        modules_dict = _parse_module_spider_output(output)
+        grouped_modules = _module_records_from_spider_data(modules_dict)
+        _cache_spider_descriptions(modules_dict)
+
+        descriptions_by_name = _descriptions_by_module_name(grouped_modules)
+
+        with _streaming_lock:
+            _apply_descriptions_to_modules_cache(descriptions_by_name)
+
+        logger.info(
+            f"Loaded descriptions for {len(descriptions_by_name)} modules"
+        )
+    except (OSError, ValueError, TypeError) as e:
+        logger.error(f"Error loading module descriptions: {e}", exc_info=True)
+    finally:
+        with _streaming_lock:
+            _streaming_in_progress = False
 
 
 @modules_bp.route('/load-descriptions', methods=['POST'])
 def load_descriptions():
     """Load descriptions for cached modules without clearing cache."""
+    global _streaming_in_progress
+
     with _streaming_lock:
         if _streaming_in_progress:
             return jsonify({'error': 'Description loading already in progress'}), 409
         
         if _modules_cache is None or len(_modules_cache) == 0:
             return jsonify({'error': 'No cached modules to load descriptions for'}), 400
-    
-    return jsonify({'status': 'started'})
+
+        _streaming_in_progress = True
+
+    try:
+        thread = threading.Thread(
+            target=_load_descriptions_background,
+            name='module-description-loader',
+            daemon=True,
+        )
+        thread.start()
+    except RuntimeError as e:
+        with _streaming_lock:
+            _streaming_in_progress = False
+        logger.error(f"Failed to start description loading: {e}", exc_info=True)
+        return jsonify({'error': 'Failed to start description loading'}), 500
+
+    return jsonify({'status': 'started', 'loading': True})
 
 
 @modules_bp.route('/refresh-stream')
@@ -797,6 +875,11 @@ def stream_descriptions():
             })
 
             _cache_spider_descriptions(modules_dict)
+            descriptions_by_name = _descriptions_by_module_name(
+                grouped_modules
+            )
+            with _streaming_lock:
+                _apply_descriptions_to_modules_cache(descriptions_by_name)
 
             for current, module in enumerate(grouped_modules, 1):
                 yield _sse_event({
@@ -868,5 +951,5 @@ def _preload_modules_cache():
             f"{len(grouped_modules)} modules, {total_versions} total versions"
         )
         
-    except Exception as e:
+    except (OSError, ValueError, TypeError) as e:
         logger.error(f"Error preloading modules cache: {e}", exc_info=True)

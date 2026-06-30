@@ -191,6 +191,7 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
+                        'X-CSRF-Token': '{{ csrf_token }}',
                     }
                 })
                 .then(response => {
@@ -199,7 +200,7 @@
                     }
                     
                     // Create EventSource for streaming (GET endpoint)
-                    const eventSource = new EventSource('{{ url_for("modules.refresh_modules") }}');
+                    const eventSource = new EventSource('{{ url_for("modules.refresh_modules", csrf_token=csrf_token) }}');
                     
                     let moduleCount = 0;
                     const collectedModules = [];
@@ -733,6 +734,7 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
+                        'X-CSRF-Token': '{{ csrf_token }}',
                     }
                 })
                 .then(response => {
@@ -741,7 +743,7 @@
                     }
                     
                     // Create EventSource for streaming (GET endpoint)
-                    const eventSource = new EventSource('{{ url_for("modules.refresh_modules") }}');
+                    const eventSource = new EventSource('{{ url_for("modules.refresh_modules", csrf_token=csrf_token) }}');
                     
                     let moduleCount = 0;
                     const collectedModules = [];

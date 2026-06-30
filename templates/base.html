@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <title>HPC Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
     <script src="https://kit.fontawesome.com/a29b1dc819.js" crossorigin="anonymous"></script>
@@ -39,9 +40,6 @@
           </li>
           <li class="nav-item">
             <a class="nav-link" href="{{ url_for('projects.projects') }}">Projects</a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('viewer.viewer') }}">HTML Viewer</a>
           </li>
         </ul>
         <ul class="navbar-nav ms-auto">

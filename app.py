@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -9,7 +10,7 @@ import time
 from pathlib import Path
 
 import flaskcode
-from flask import Flask, render_template
+from flask import Flask, abort, render_template, request, session
 
 from blueprints.editor import editor_bp
 from blueprints.envs import envs_bp
@@ -17,11 +18,60 @@ from blueprints.jobs import jobs_bp
 from blueprints.modules import _preload_modules_cache, modules_bp
 from blueprints.projects import projects_bp
 from blueprints.settings import settings_bp
-from blueprints.viewer import viewer_bp
-from utils import load_settings
+from utils import load_settings, safe_code_editor_path
+
+SECRET_KEY_FILE = Path('config/.secret_key')
+CSRF_PROTECTED_ENDPOINTS = {
+    'settings.save_settings',
+    'envs.env_history',
+    'modules.refresh_start',
+    'modules.load_descriptions',
+}
+CSRF_PROTECTED_STREAM_ENDPOINTS = {
+    'modules.refresh_modules',
+    'modules.stream_descriptions',
+}
+
+
+def _load_secret_key() -> str:
+    """Load SECRET_KEY from env or create a persistent per-app OOD secret."""
+    secret_key = os.environ.get('SECRET_KEY')
+    if secret_key:
+        return secret_key
+
+    try:
+        if SECRET_KEY_FILE.exists():
+            return SECRET_KEY_FILE.read_text(encoding='utf-8').strip()
+
+        SECRET_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        secret_key = secrets.token_urlsafe(48)
+        file_descriptor = os.open(
+            SECRET_KEY_FILE,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        with os.fdopen(file_descriptor, 'w', encoding='utf-8') as secret_file:
+            secret_file.write(f"{secret_key}\n")
+        return secret_key
+    except OSError:
+        logging.getLogger(__name__).warning(
+            "Unable to persist Flask SECRET_KEY; using process-local secret."
+        )
+        return secrets.token_urlsafe(48)
+
+
+def _csrf_token() -> str:
+    """Return the current session CSRF token, creating one if needed."""
+    token = session.get('csrf_token')
+    if isinstance(token, str) and token:
+        return token
+
+    token = secrets.token_urlsafe(32)
+    session['csrf_token'] = token
+    return token
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
+app.config['SECRET_KEY'] = _load_secret_key()
 
 settings_data = load_settings()
 
@@ -29,6 +79,9 @@ app.config.from_object(flaskcode.default_config)
 app.config['FLASKCODE_RESOURCE_BASEPATH'] = settings_data.get(
     "code_editor_path",
     str(Path.cwd()),
+)
+app.config['FLASKCODE_RESOURCE_BASEPATH'] = safe_code_editor_path(
+    app.config['FLASKCODE_RESOURCE_BASEPATH']
 )
 app.register_blueprint(flaskcode.blueprint, url_prefix='/flaskcode')
 
@@ -53,7 +106,7 @@ root_logger.setLevel(logging.INFO)
 root_logger.addHandler(file_handler)
 root_logger.addHandler(stream_handler)
 
-logger = logging.getLogger(__name__.capitalize())
+logger = logging.getLogger(__name__)
 logger.info("Application initialized - logging configured")
 
 
@@ -111,34 +164,8 @@ def _run_background_script(
                 logger.warning(f"stderr: {result.stderr[:200]}")
     except subprocess.TimeoutExpired:
         logger.warning(f"{script_name} timed out after {timeout}s")
-    except Exception as e:
+    except OSError as e:
         logger.warning(f"Error running {script_name}: {e}")
-
-
-def update_modules_background() -> None:
-    """Update modules list in background thread."""
-    _run_background_script(
-        'update_modules.sh',
-        Path('logs/modules.txt'),
-        max_age=3600,
-        timeout=120,
-    )
-
-
-def update_partitions_background() -> None:
-    """Update partitions list in background thread."""
-    _run_background_script(
-        'update_partitions.sh',
-        Path('logs/partitions.txt'),
-        max_age=300,
-    )
-
-
-modules_thread = threading.Thread(target=update_modules_background, daemon=True)
-modules_thread.start()
-
-partitions_thread = threading.Thread(target=update_partitions_background, daemon=True)
-partitions_thread.start()
 
 
 def update_disk_quota_background(force: bool = False) -> None:
@@ -168,20 +195,46 @@ app.register_blueprint(modules_bp)
 app.register_blueprint(jobs_bp)
 app.register_blueprint(envs_bp)
 app.register_blueprint(projects_bp)
-app.register_blueprint(viewer_bp)
 app.register_blueprint(settings_bp)
 app.register_blueprint(editor_bp)
 
 
+@app.before_request
+def validate_csrf_token() -> None:
+    """Reject cross-site requests to app routes that mutate state or scan HPC."""
+    endpoint = request.endpoint
+    if endpoint not in CSRF_PROTECTED_ENDPOINTS | CSRF_PROTECTED_STREAM_ENDPOINTS:
+        return
+
+    expected_token = session.get('csrf_token')
+    if not isinstance(expected_token, str) or not expected_token:
+        abort(400)
+
+    if endpoint in CSRF_PROTECTED_STREAM_ENDPOINTS:
+        submitted_token = request.args.get('csrf_token', '')
+    else:
+        submitted_token = (
+            request.form.get('csrf_token')
+            or request.headers.get('X-CSRF-Token')
+            or ''
+        )
+
+    if not secrets.compare_digest(expected_token, submitted_token):
+        abort(400)
+
+
 @app.context_processor
 def inject_navbar_color() -> dict[str, str]:
-    """Make navbar_color available to all templates (reload each request)."""
+    """Make shared template values available, reloading settings each request."""
     current = load_settings()
     navbar_color = current.get(
         "navbar_color",
         settings_data.get("navbar_color", "#ede7f6"),
     )
-    return {"navbar_color": navbar_color}
+    return {
+        "csrf_token": _csrf_token(),
+        "navbar_color": navbar_color,
+    }
 
 
 def _strip_ansi_codes(text: str) -> str:
@@ -283,7 +336,7 @@ def _parse_disk_quota() -> dict[str, object] | None:
 
         return quota_data if quota_data else None
 
-    except Exception as e:
+    except (OSError, ValueError, IndexError) as e:
         logger.warning(f"Error parsing disk quota: {e}")
         return None
 

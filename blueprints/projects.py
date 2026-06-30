@@ -6,22 +6,29 @@ import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from flask import Blueprint, jsonify, render_template, request
 
-from utils import expand_path, find_binary, load_settings
+from utils import expand_path, load_settings
 
 projects_bp = Blueprint('projects', __name__, url_prefix='/projects')
-logger = logging.getLogger(__name__.capitalize())
+logger = logging.getLogger(__name__)
 
 PROJECT_DIRS_CONFIG_KEY = 'project_directories'
 PROJECTS_CACHE_FILE = Path('logs/projects_cache.json')
 CACHE_VALIDITY_SECONDS = 3600  # 1 hour
 PROJECTS_CACHE_SCHEMA_VERSION = 2
+PROJECT_REPO_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    subprocess.SubprocessError,
+    ValueError,
+    KeyError,
+    TypeError,
+)
 
 
-def _find_git_status_checker() -> Optional[str]:
+def _find_git_status_checker() -> str | None:
     """Find git-status-checker binary in PATH or common locations."""
     # Try common locations
     common_paths = [
@@ -45,9 +52,9 @@ def _find_git_status_checker() -> Optional[str]:
 
 
 def _call_git_status_checker(
-    base_dirs: List[str],
+    base_dirs: list[str],
     ignore_untracked: bool = True,
-) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+) -> tuple[dict[str, Any] | None, str | None]:
     """
     Call git-status-checker with --json flag and return parsed JSON output.
     
@@ -145,15 +152,15 @@ def _call_git_status_checker(
     except subprocess.TimeoutExpired:
         logger.error("git-status-checker timed out after 600 seconds")
         return None, "git-status-checker timed out after 10 minutes. Using fallback mode to scan directories individually."
-    except Exception as e:
+    except OSError as e:
         logger.error(f"Exception calling git-status-checker: {e}", exc_info=True)
         return None, f"Error calling git-status-checker: {str(e)}"
 
 
 def _get_git_info_from_status_checker(
-    repo_status: Dict[str, Any],
+    repo_status: dict[str, Any],
     repo_path: Path,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Convert git-status-checker status to our git_info format.
     
@@ -220,14 +227,14 @@ def _get_git_info_from_status_checker(
         # Permission errors - log but continue with available data
         logger.debug(f"Permission error getting git info for {repo_path}: {e}")
         git_info['fetch_error'] = 'Permission denied'
-    except Exception as e:
+    except (subprocess.SubprocessError, ValueError) as e:
         logger.warning(f"Error getting additional git info for {repo_path}: {e}")
         git_info['fetch_error'] = str(e)
     
     return git_info
 
 
-def _repo_stdout(repo_path: Path, args: List[str]) -> Optional[str]:
+def _repo_stdout(repo_path: Path, args: list[str]) -> str | None:
     """Run a read-only git command and return trimmed stdout when it succeeds."""
     result = subprocess.run(
         ['git', *args],
@@ -243,7 +250,7 @@ def _repo_stdout(repo_path: Path, args: List[str]) -> Optional[str]:
     return output or None
 
 
-def _get_status_checker_remote(repo_status: Dict[str, Any]) -> Optional[str]:
+def _get_status_checker_remote(repo_status: dict[str, Any]) -> str | None:
     """Read common remote URL fields from git-status-checker-like output."""
     for key in ('remote', 'remote_url', 'remoteUrl', 'url'):
         value = repo_status.get(key)
@@ -261,9 +268,9 @@ def _get_status_checker_remote(repo_status: Dict[str, Any]) -> Optional[str]:
 
 def _get_remote_url(
     repo_path: Path,
-    branch: Optional[str],
-    repo_status: Optional[Dict[str, Any]] = None,
-) -> Optional[str]:
+    branch: str | None,
+    repo_status: dict[str, Any] | None = None,
+) -> str | None:
     """Return the best available remote URL for a repository."""
     if repo_status:
         checker_remote = _get_status_checker_remote(repo_status)
@@ -297,7 +304,7 @@ def _get_remote_url(
     return _repo_stdout(repo_path, ['remote', 'get-url', remote_name])
 
 
-def _get_git_info_fallback(repo_path: Path) -> Optional[Dict[str, Any]]:
+def _get_git_info_fallback(repo_path: Path) -> dict[str, Any] | None:
     """
     Fallback function to get git info using direct git commands.
     Used when git-status-checker is not available.
@@ -394,12 +401,12 @@ def _get_git_info_fallback(repo_path: Path) -> Optional[Dict[str, Any]]:
         
         return git_info
         
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
         logger.warning(f"Error getting git info for {repo_path}: {e}")
         return None
 
 
-def _find_git_repos(base_dirs: List[str]) -> List[Path]:
+def _find_git_repos(base_dirs: list[str]) -> list[Path]:
     """
     Find all git repositories in base directories.
     
@@ -447,7 +454,7 @@ def _find_git_repos(base_dirs: List[str]) -> List[Path]:
             except (PermissionError, OSError) as e:
                 logger.warning(f"Error scanning directory {base_path}: {e}")
                 continue
-        except Exception as e:
+        except OSError as e:
             logger.error(f"Error processing directory {base_dir}: {e}", exc_info=True)
             continue
     
@@ -455,7 +462,7 @@ def _find_git_repos(base_dirs: List[str]) -> List[Path]:
     return repos
 
 
-def _check_reproducibility_health(repo_path: Path) -> Dict[str, Any]:
+def _check_reproducibility_health(repo_path: Path) -> dict[str, Any]:
     """
     Check reproducibility health indicators for a repository.
     
@@ -572,13 +579,13 @@ def _check_reproducibility_health(repo_path: Path) -> Dict[str, Any]:
                     'files_modified_after_commit': modified_after_commit,
                     'count': len(modified_after_commit),
                 }
-    except Exception:
-        pass
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        logger.debug(f"Unable to check staleness for {repo_path}: {e}")
     
     return health
 
 
-def _check_drift_and_footprint(repo_path: Path) -> Dict[str, Any]:
+def _check_drift_and_footprint(repo_path: Path) -> dict[str, Any]:
     """
     Check filesystem drift and footprint for a repository.
     
@@ -711,12 +718,12 @@ def _check_drift_and_footprint(repo_path: Path) -> Dict[str, Any]:
         # Limit to top 10
         info['large_untracked_files'] = info['large_untracked_files'][:10]
         
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
         logger.warning(f"Error checking drift/footprint for {repo_path}: {e}")
     
     return info
 
-def _process_repo(repo_path: Path, repo_status: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+def _process_repo(repo_path: Path, repo_status: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """
     Process a single repository and return project data.
     
@@ -746,7 +753,7 @@ def _process_repo(repo_path: Path, repo_status: Optional[Dict[str, Any]] = None)
         # Get reproducibility and drift data with error handling
         try:
             reproducibility = _check_reproducibility_health(repo_path)
-        except Exception as e:
+        except PROJECT_REPO_ERRORS as e:
             logger.warning(f"Error checking reproducibility for {repo_path}: {e}")
             reproducibility = {
                 'environment_files': [],
@@ -757,7 +764,7 @@ def _process_repo(repo_path: Path, repo_status: Optional[Dict[str, Any]] = None)
         
         try:
             drift_footprint = _check_drift_and_footprint(repo_path)
-        except Exception as e:
+        except PROJECT_REPO_ERRORS as e:
             logger.warning(f"Error checking drift/footprint for {repo_path}: {e}")
             drift_footprint = {
                 'directory_size': 0,
@@ -779,12 +786,12 @@ def _process_repo(repo_path: Path, repo_status: Optional[Dict[str, Any]] = None)
         # Permission/authentication errors - skip this repo
         logger.warning(f"Skipping repository {repo_path} due to permission/authentication error: {e}")
         return None
-    except Exception as e:
+    except PROJECT_REPO_ERRORS as e:
         logger.error(f"Error processing repository {repo_path}: {e}", exc_info=True)
         return None
 
 
-def _load_projects_cache() -> Optional[Dict[str, Any]]:
+def _load_projects_cache() -> dict[str, Any] | None:
     """Load projects cache from file.
     
     Returns:
@@ -832,12 +839,12 @@ def _load_projects_cache() -> Optional[Dict[str, Any]]:
     except json.JSONDecodeError as e:
         logger.warning(f"Error parsing projects cache JSON: {e}")
         return None
-    except Exception as e:
+    except (OSError, TypeError) as e:
         logger.warning(f"Error loading projects cache: {e}", exc_info=True)
         return None
 
 
-def _save_projects_cache(projects_data: List[Dict[str, Any]], directories: List[str]) -> None:
+def _save_projects_cache(projects_data: list[dict[str, Any]], directories: list[str]) -> None:
     """Save projects cache to file.
     
     Args:
@@ -855,15 +862,18 @@ def _save_projects_cache(projects_data: List[Dict[str, Any]], directories: List[
         with PROJECTS_CACHE_FILE.open('w', encoding='utf-8') as f:
             json.dump(cache, f, indent=2, ensure_ascii=False)
         logger.info(f"Saved projects cache: {len(projects_data)} projects from {len(directories)} directories")
-    except Exception as e:
+    except (OSError, TypeError) as e:
         logger.warning(f"Error saving projects cache: {e}")
 
 
-def _collect_projects_data(project_dirs: List[str], use_cache: bool = True) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+def _collect_projects_data(
+    project_dirs: list[str],
+    use_cache: bool = True,
+) -> tuple[list[dict[str, Any]], str | None]:
     """
     Collect project data from cache or by scanning directories.
-    Uses cache if valid (< 1 hour old) and directories match.
-    When new directories are added, only scans new ones and merges with cache.
+    Scans configured directories so git state reflects the current filesystem.
+    Uses a valid cache only as a fallback when scanning fails.
     
     Args:
         project_dirs: List of project directories to scan
@@ -875,64 +885,45 @@ def _collect_projects_data(project_dirs: List[str], use_cache: bool = True) -> T
     # Normalize directory paths for comparison
     normalized_dirs = sorted([expand_path(d) for d in project_dirs])
     
-    # Try to load from cache
+    # Load cache only as an error fallback. Returning it before a scan would
+    # hide new repos, deleted repos, branch changes, and dirty/clean state.
     cached_data = None
     if use_cache:
         cached_data = _load_projects_cache()
-        if cached_data:
-            cached_dirs = sorted([expand_path(d) for d in cached_data.get('directories', [])])
-            # Check if all cached directories are still in the current list
-            if set(cached_dirs).issubset(set(normalized_dirs)):
-                # Check if there are new directories to scan
-                new_dirs = [d for d in normalized_dirs if d not in cached_dirs]
-                if not new_dirs:
-                    # All directories are cached and no new ones - return cache
-                    cached_projects = cached_data.get('projects', [])
-                    logger.info(f"Using cached projects data: {len(cached_projects)} projects")
-                    # Ensure cached projects are valid (have required keys)
-                    valid_projects = [p for p in cached_projects if isinstance(p, dict) and 'path' in p]
-                    if len(valid_projects) != len(cached_projects):
-                        logger.warning(f"Filtered {len(cached_projects) - len(valid_projects)} invalid projects from cache")
-                    return valid_projects, None
-                else:
-                    # Some new directories - scan only those and merge
-                    logger.info(f"Cache found for {len(cached_dirs)} directories, scanning {len(new_dirs)} new directories")
-                    cached_projects = cached_data.get('projects', [])
-                    # Ensure cached projects are valid
-                    cached_projects = [p for p in cached_projects if isinstance(p, dict) and 'path' in p]
-                    # Scan new directories
-                    try:
-                        new_projects_data, new_error = _scan_directories(new_dirs)
-                        # Merge: combine cached and new, remove duplicates by path
-                        all_projects = {p['path']: p for p in cached_projects}
-                        all_projects.update({p['path']: p for p in new_projects_data})
-                        merged_projects = list(all_projects.values())
-                        merged_projects.sort(key=lambda x: x['name'].lower())
-                        # Save updated cache
-                        _save_projects_cache(merged_projects, normalized_dirs)
-                        logger.info(f"Merged cache with new scan: {len(merged_projects)} total projects")
-                        return merged_projects, new_error
-                    except Exception as e:
-                        logger.error(f"Error scanning new directories: {e}", exc_info=True)
-                        # Return cached data if new scan fails
-                        return cached_projects, f"Error scanning new directories: {str(e)}"
     
-    # No valid cache or cache disabled - scan all directories
-    logger.info(f"Scanning {len(normalized_dirs)} directories (cache miss or disabled)")
+    logger.info(f"Scanning {len(normalized_dirs)} project directories")
     try:
         projects_data, error = _scan_directories(normalized_dirs)
-        if projects_data:
+        if use_cache:
             try:
                 _save_projects_cache(projects_data, normalized_dirs)
-            except Exception as cache_err:
+            except (OSError, TypeError) as cache_err:
                 logger.warning(f"Failed to save cache: {cache_err}")
         return projects_data, error
-    except Exception as e:
+    except PROJECT_REPO_ERRORS as e:
         logger.error(f"Error in _collect_projects_data: {e}", exc_info=True)
+        if cached_data:
+            cached_projects = cached_data.get('projects', [])
+            valid_projects = [
+                p for p in cached_projects
+                if isinstance(p, dict) and 'path' in p
+            ]
+            if valid_projects:
+                logger.warning(
+                    f"Returning {len(valid_projects)} cached projects after "
+                    f"scan failure: {e}"
+                )
+                return (
+                    valid_projects,
+                    f"Error collecting projects data: {str(e)}",
+                )
+
         return [], f"Error collecting projects data: {str(e)}"
 
 
-def _scan_directories(project_dirs: List[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+def _scan_directories(
+    project_dirs: list[str],
+) -> tuple[list[dict[str, Any]], str | None]:
     """
     Scan directories for git repositories and collect project data.
     
@@ -942,14 +933,14 @@ def _scan_directories(project_dirs: List[str]) -> Tuple[List[Dict[str, Any]], Op
     Returns:
         Tuple of (projects_data_list, error_message)
     """
-    projects_data: List[Dict[str, Any]] = []
-    errors: List[str] = []
+    projects_data: list[dict[str, Any]] = []
+    errors: list[str] = []
     
     # Simple mode: skip git-status-checker and do a direct repo scan.
     repos = _find_git_repos(project_dirs)
     if repos:
         logger.info(f"Found {len(repos)} repositories via manual scan")
-        skipped_repos: List[str] = []
+        skipped_repos: list[str] = []
         for repo_path in repos:
             try:
                 project = _process_repo(repo_path)
@@ -964,7 +955,7 @@ def _scan_directories(project_dirs: List[str]) -> Tuple[List[Dict[str, Any]], Op
                     f"Skipping repository {repo_path} due to permission/authentication error: {e}"
                 )
                 skipped_repos.append(str(repo_path))
-            except Exception as e:
+            except (subprocess.SubprocessError, ValueError, KeyError, TypeError) as e:
                 # Other errors - log but continue processing
                 logger.warning(f"Error processing repository {repo_path}: {e}")
                 skipped_repos.append(str(repo_path))
@@ -988,12 +979,10 @@ def _scan_directories(project_dirs: List[str]) -> Tuple[List[Dict[str, Any]], Op
     projects_data.sort(key=lambda x: x['name'].lower())
     logger.info(f"Collected {len(projects_data)} projects from {len(project_dirs)} directories")
     
-    # Return error only if no projects were found and there were errors
+    # Return errors only when scanning produced no usable project records.
     error = None
     if not projects_data and errors:
         error = "; ".join(errors[:3])  # Limit error message length
-    elif errors and len(errors) > len(projects_data):
-        error = f"Some directories had errors: {len(errors)} errors, {len(projects_data)} projects found"
     
     return projects_data, error
 
@@ -1062,8 +1051,11 @@ def projects_status():
         
         try:
             projects_data, error = _collect_projects_data(project_dirs, use_cache=not force_refresh)
-        except Exception as collect_err:
-            logger.error(f"Error in _collect_projects_data: {collect_err}", exc_info=True)
+        except PROJECT_REPO_ERRORS as collect_err:
+            logger.error(
+                f"Error in _collect_projects_data: {collect_err}",
+                exc_info=True,
+            )
             return jsonify({
                 'projects': [],
                 'total': 0,
@@ -1102,22 +1094,28 @@ def projects_status():
             try:
                 if projects_data:
                     sample = projects_data[0]
-                    logger.error(f"Problematic project data sample (first project): {sample.get('name', 'unknown')}")
+                    logger.error(
+                        "Problematic project data sample (first project): "
+                        f"{sample.get('name', 'unknown')}"
+                    )
                     logger.error(f"Sample keys: {list(sample.keys())}")
                     # Try to identify the problematic field
                     for key, value in sample.items():
                         try:
                             json.dumps({key: value}, cls=CustomJsonEncoder)
-                        except Exception as field_err:
-                            logger.error(f"Field '{key}' is not JSON serializable: {field_err}, type: {type(value)}")
-            except Exception as log_err:
+                        except (TypeError, ValueError) as field_err:
+                            logger.error(
+                                f"Field '{key}' is not JSON serializable: "
+                                f"{field_err}, type: {type(value)}"
+                            )
+            except (TypeError, ValueError, KeyError) as log_err:
                 logger.error(f"Error logging problematic data: {log_err}")
             return jsonify({
                 'projects': [],
                 'total': 0,
                 'error': f'Data serialization error: {str(json_err)}',
             }), 500
-    except Exception as e:
+    except PROJECT_REPO_ERRORS as e:
         logger.error(f"Error in projects_status endpoint: {e}", exc_info=True)
         return jsonify({
             'projects': [],
