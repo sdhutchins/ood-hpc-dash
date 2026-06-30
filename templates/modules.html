@@ -80,16 +80,6 @@
                             </div>
                         </div>
                     </div>
-                    <div id="descriptionsLoadingAlert" class="alert alert-info alert-dismissible fade show d-none mt-2 mb-0" role="alert">
-                        <i class="fas fa-spinner fa-spin me-2"></i>
-                        <span id="descriptionsLoadingText">Loading descriptions...</span>
-                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-                    </div>
-                    <div id="descriptionsCompleteAlert" class="alert alert-success alert-dismissible fade show d-none mt-2 mb-0" role="alert">
-                        <i class="fas fa-check-circle me-2"></i>
-                        <strong>Descriptions loaded!</strong> Please <a href="javascript:location.reload()" class="alert-link">reload the page</a> to see all module descriptions.
-                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-                    </div>
                 </div>
                 <div class="card-body p-0">
                     <div class="table-responsive">
@@ -159,282 +149,8 @@
         let allModules = {% if modules %}{{ modules|tojson|safe }}{% else %}[]{% endif %};
         let categoryOrder = {% if category_order %}{{ category_order|tojson|safe }}{% else %}[]{% endif %};
         
-        // Only start streaming if cache is truly empty
-        {% if cache_empty %}
-        // Start streaming modules if cache is empty
-        (function() {
-            function startStreamingModules() {
-            // Show loading state
-            document.getElementById('loadingCard').classList.remove('d-none');
-            document.getElementById('modulesCard').classList.add('d-none');
-            
-            // Clear table
-            const tbody = document.getElementById('modulesTableBody');
-            if (tbody) {
-                tbody.innerHTML = '';
-            }
-            allModules = [];
-            
-                // Show progress bar
-                const progressBarContainer = document.getElementById('progressBarContainer');
-                if (progressBarContainer) {
-                    progressBarContainer.classList.remove('d-none');
-                }
-                const progressBar = document.getElementById('progressBar');
-                if (progressBar) {
-                    progressBar.style.width = '0%';
-                    progressBar.setAttribute('aria-valuenow', 0);
-                }
-                
-                // Start refresh process
-                fetch('{{ url_for("modules.refresh_start") }}', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-CSRF-Token': '{{ csrf_token }}',
-                    }
-                })
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error('Failed to start refresh');
-                    }
-                    
-                    // Create EventSource for streaming (GET endpoint)
-                    const eventSource = new EventSource('{{ url_for("modules.refresh_modules", csrf_token=csrf_token) }}');
-                    
-                    let moduleCount = 0;
-                    const collectedModules = [];
-                    
-                    eventSource.onmessage = function(event) {
-                        try {
-                            const data = JSON.parse(event.data);
-                            
-                            if (data.type === 'progress') {
-                                // Update progress bar
-                                if (data.total && data.current !== undefined) {
-                                    const percentage = Math.round((data.current / data.total) * 100);
-                                    if (progressBar) {
-                                        progressBar.style.width = percentage + '%';
-                                        progressBar.setAttribute('aria-valuenow', percentage);
-                                    }
-                                    const progressCount = document.getElementById('progressCount');
-                                    if (progressCount) {
-                                        progressCount.textContent = `${data.current}/${data.total}`;
-                                    }
-                                }
-                                
-                                const progressText = document.getElementById('progressText');
-                                if (progressText && data.message) {
-                                    progressText.textContent = data.message;
-                                }
-                                
-                                // Update loading message
-                                const loadingMessage = document.getElementById('loadingMessage');
-                                if (loadingMessage) {
-                                    if (data.current !== undefined && data.total !== undefined) {
-                                        loadingMessage.textContent = `${data.message || 'Loading modules'} (${data.current}/${data.total})`;
-                                    } else {
-                                        loadingMessage.textContent = data.message || 'Loading modules...';
-                                    }
-                                }
-                                console.log(data.message);
-                            } else if (data.type === 'module') {
-                                // Show table when first module arrives
-                                if (moduleCount === 0) {
-                        document.getElementById('loadingCard').classList.add('d-none');
-                        document.getElementById('modulesCard').classList.remove('d-none');
-                                }
-                            
-                                // Add module to collection
-                                collectedModules.push(data.module);
-                                allModules.push(data.module);
-                                moduleCount++;
-                                
-                                // Sort all modules alphabetically by name
-                                allModules.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
-                                
-                                // Rebuild table with sorted modules
-                                if (tbody) {
-                                    tbody.innerHTML = '';
-                                    
-                                    allModules.forEach(module => {
-                                        const row = document.createElement('tr');
-                                        row.className = 'module-row';
-                                        row.setAttribute('data-category', module.category || 'Misc');
-                                        
-                                        const nameCell = document.createElement('td');
-                                        nameCell.innerHTML = '<code>' + escapeHtml(module.name) + '</code>';
-                                        
-                                        const descCell = document.createElement('td');
-                                        descCell.classList.add('d-none');
-                                        if (module.description) {
-                                            descCell.innerHTML = '<small class="text-muted">' + escapeHtml(module.description) + '</small>';
-                                        } else {
-                                            descCell.innerHTML = '<span class="text-muted">-</span>';
-                                        }
-                                        
-                                        const versionsCell = document.createElement('td');
-                                        if (module.versions && module.versions.length > 0) {
-                                            versionsCell.innerHTML = module.versions.map(v => 
-                                                '<button type="button" class="btn btn-sm copy-version me-1 mb-1" data-version="' + escapeHtml(v) + '" data-bs-toggle="tooltip" data-bs-placement="top" title="Click to copy: module load ' + escapeHtml(v) + '" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);"><i class="fa-regular fa-copy me-1"></i><code class="text-reset">' + escapeHtml(v) + '</code></button>'
-                                            ).join('');
-                                        } else {
-                                            versionsCell.innerHTML = '<span class="text-muted">-</span>';
-                                        }
-                                        
-                                        row.appendChild(nameCell);
-                                        row.appendChild(descCell);
-                                        row.appendChild(versionsCell);
-                                        tbody.appendChild(row);
-                                    });
-                                    
-                                    // Wire up copy handlers for all buttons
-                                    attachCopyHandlers();
-                                }
-                                
-                                // Update count
-                        const countEl = document.getElementById('uniqueCount');
-                        if (countEl) {
-                                    countEl.textContent = moduleCount;
-                                }
-                                
-                                // Apply current filters
-                                applyFilters();
-                            } else if (data.type === 'descriptions_start') {
-                                // Show descriptions loading alert
-                                const descriptionsAlert = document.getElementById('descriptionsLoadingAlert');
-                                if (descriptionsAlert) {
-                                    descriptionsAlert.classList.remove('d-none');
-                                }
-                            } else if (data.type === 'module_update') {
-                                // Update description for a specific module
-                                const moduleName = data.module_name;
-                                const description = data.description || '';
-                                
-                                // Find the row for this module and update description
-                                if (tbody) {
-                                    const rows = tbody.querySelectorAll('tr.module-row');
-                                    rows.forEach(row => {
-                                        const nameCell = row.querySelector('td:first-child code');
-                                        if (nameCell && nameCell.textContent.trim() === moduleName) {
-                                            const descCell = row.querySelector('td:nth-child(2)');
-                                            if (descCell) {
-                                                if (description) {
-                                                    descCell.innerHTML = '<small class="text-muted">' + escapeHtml(description) + '</small>';
-                                                } else {
-                                                    descCell.innerHTML = '<span class="text-muted">-</span>';
-                                                }
-                                            }
-                                        }
-                                    });
-                                }
-                                
-                                // Also update in allModules array
-                                const moduleIndex = allModules.findIndex(m => m.name === moduleName);
-                                if (moduleIndex !== -1) {
-                                    allModules[moduleIndex].description = description;
-                                }
-                            } else if (data.type === 'descriptions_complete') {
-                                // Hide descriptions loading alert
-                                const descriptionsAlert = document.getElementById('descriptionsLoadingAlert');
-                                if (descriptionsAlert) {
-                                    descriptionsAlert.classList.add('d-none');
-                                }
-                            } else if (data.type === 'complete') {
-                                // Refresh complete
-                                eventSource.close();
-                                
-                                // Hide progress bar
-                                const progressBarContainer = document.getElementById('progressBarContainer');
-                                if (progressBarContainer) {
-                                    progressBarContainer.classList.add('d-none');
-                                }
-                                
-                                // Set progress bar to 100%
-                                const progressBar = document.getElementById('progressBar');
-                                if (progressBar) {
-                                    progressBar.style.width = '100%';
-                                    progressBar.setAttribute('aria-valuenow', 100);
-                                }
-                                
-                                // Update category filter with all collected modules
-                                const categories = new Set();
-                                collectedModules.forEach(m => categories.add(m.category));
-                                populateCategoryFilter(Array.from(categories).sort());
-                                
-                                // Update cache timestamp
-                                const cacheTimestampEl = document.getElementById('cacheTimestamp');
-                                const cacheTimestampValueEl = document.getElementById('cacheTimestampValue');
-                                if (cacheTimestampValueEl) {
-                                    const now = new Date();
-                                    const formatted = now.toLocaleString('en-US', {
-                                        year: 'numeric',
-                                        month: '2-digit',
-                                        day: '2-digit',
-                                        hour: '2-digit',
-                                        minute: '2-digit',
-                                        second: '2-digit'
-                                    });
-                                    cacheTimestampValueEl.textContent = formatted;
-                                }
-                                if (cacheTimestampEl) {
-                                    cacheTimestampEl.style.display = '';
-                                }
-                                
-                                console.log(data.message);
-                        } else if (data.type === 'error') {
-                            // Error occurred
-                            eventSource.close();
-                            
-                            // Hide progress bar
-                            const progressBarContainer = document.getElementById('progressBarContainer');
-                            if (progressBarContainer) {
-                                progressBarContainer.classList.add('d-none');
-                            }
-                            
-                            alert('Error: ' + data.message);
-                            document.getElementById('loadingCard').classList.remove('d-none');
-                            document.getElementById('modulesCard').classList.add('d-none');
-                        }
-                    } catch (error) {
-                        console.error('Error parsing SSE data:', error);
-                    }
-                };
-                
-                eventSource.onerror = function(error) {
-                    console.error('EventSource error:', error);
-                    eventSource.close();
-                    
-                    // Hide progress bar
-                    const progressBarContainer = document.getElementById('progressBarContainer');
-                    if (progressBarContainer) {
-                        progressBarContainer.classList.add('d-none');
-                    }
-                    
-                    alert('Connection error while loading modules.');
-                    document.getElementById('loadingCard').classList.remove('d-none');
-                    document.getElementById('modulesCard').classList.add('d-none');
-                };
-                })
-                .catch(error => {
-                    console.error('Error starting module stream:', error);
-                    
-                    // Hide progress bar
-                    const progressBarContainer = document.getElementById('progressBarContainer');
-                    if (progressBarContainer) {
-                        progressBarContainer.classList.add('d-none');
-                    }
-                    
-                    alert('Failed to start loading modules. Please try again.');
-                });
-        }
-        
-        startStreamingModules();
-        {% else %}
-        // Modules are already cached - populate category filter
+        {% if not cache_empty %}
         populateCategoryFilter(categoryOrder);
-        
-        // Description background loading is disabled for the demo.
         {% endif %}
         
         function populateCategoryFilter(categories) {
@@ -690,389 +406,209 @@
             }
         });
         
-        // Refresh button handler with streaming
-        const refreshBtn = document.getElementById('refreshModulesBtn');
-        if (refreshBtn) {
-            refreshBtn.addEventListener('click', function() {
-                const icon = this.querySelector('i');
-                const originalClass = icon.className;
-                const buttonText = this.querySelector('span');
-                
-                // Check if already refreshing
-                if (this.disabled) {
-                    return;
-                }
-                
-                // Show loading state
-                icon.className = 'fas fa-spinner fa-spin me-1';
-                this.disabled = true;
-                
-                // Clear existing modules
-                allModules = [];
-                const tbody = document.getElementById('modulesTableBody');
-                if (tbody) {
-                    tbody.innerHTML = '';
-                }
-                const countEl = document.getElementById('uniqueCount');
-                if (countEl) {
-                    countEl.textContent = '0';
-                }
-                
-                // Show progress bar
-                const progressBarContainer = document.getElementById('progressBarContainer');
-                if (progressBarContainer) {
-                    progressBarContainer.classList.remove('d-none');
-                }
+        function setProgressVisible(isVisible) {
+            const progressBarContainer = document.getElementById('progressBarContainer');
+            if (progressBarContainer) {
+                progressBarContainer.classList.toggle('d-none', !isVisible);
+            }
+        }
+
+        function resetProgress() {
+            const progressBar = document.getElementById('progressBar');
+            const progressCount = document.getElementById('progressCount');
+            if (progressBar) {
+                progressBar.style.width = '0%';
+                progressBar.setAttribute('aria-valuenow', 0);
+            }
+            if (progressCount) {
+                progressCount.textContent = '0/0';
+            }
+        }
+
+        function updateProgress(data, buttonText) {
+            if (data.total && data.current !== undefined) {
+                const percentage = Math.round((data.current / data.total) * 100);
                 const progressBar = document.getElementById('progressBar');
+                const progressCount = document.getElementById('progressCount');
                 if (progressBar) {
-                    progressBar.style.width = '0%';
-                    progressBar.setAttribute('aria-valuenow', 0);
+                    progressBar.style.width = percentage + '%';
+                    progressBar.setAttribute('aria-valuenow', percentage);
                 }
-                
-                // Start refresh process
-                fetch('{{ url_for("modules.refresh_start") }}', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-CSRF-Token': '{{ csrf_token }}',
-                    }
-                })
+                if (progressCount) {
+                    progressCount.textContent = `${data.current}/${data.total}`;
+                }
+                if (buttonText) {
+                    buttonText.textContent = `${data.current}/${data.total}`;
+                }
+            }
+
+            const progressText = document.getElementById('progressText');
+            if (progressText && data.message) {
+                progressText.textContent = data.message;
+            }
+
+            const loadingMessage = document.getElementById('loadingMessage');
+            if (loadingMessage) {
+                if (data.current !== undefined && data.total !== undefined) {
+                    loadingMessage.textContent = `${data.message || 'Loading modules'} (${data.current}/${data.total})`;
+                } else {
+                    loadingMessage.textContent = data.message || 'Loading modules...';
+                }
+            }
+        }
+
+        function updateCacheTimestamp() {
+            const cacheTimestampEl = document.getElementById('cacheTimestamp');
+            const cacheTimestampValueEl = document.getElementById('cacheTimestampValue');
+            if (cacheTimestampValueEl) {
+                const now = new Date();
+                cacheTimestampValueEl.textContent = now.toLocaleString('en-US', {
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+            }
+            if (cacheTimestampEl) {
+                cacheTimestampEl.style.display = '';
+            }
+        }
+
+        function setRefreshButtonState(button, isRefreshing) {
+            if (!button) return;
+            const icon = button.querySelector('i');
+            const buttonText = button.querySelector('span');
+            if (isRefreshing) {
+                button.dataset.originalIconClass = icon ? icon.className : '';
+                if (icon) {
+                    icon.className = 'fas fa-spinner fa-spin me-1';
+                }
+                button.disabled = true;
+                return;
+            }
+
+            if (icon && button.dataset.originalIconClass) {
+                icon.className = button.dataset.originalIconClass;
+            }
+            if (buttonText) {
+                buttonText.textContent = 'Refresh';
+            }
+            button.disabled = false;
+        }
+
+        function showRefreshError(message, isInitialLoad) {
+            setProgressVisible(false);
+            alert(message);
+            if (isInitialLoad) {
+                document.getElementById('loadingCard').classList.remove('d-none');
+                document.getElementById('modulesCard').classList.add('d-none');
+            }
+        }
+
+        function startModuleRefresh(options = {}) {
+            const isInitialLoad = options.initialLoad === true;
+            const refreshButton = options.button || null;
+            const buttonText = refreshButton ? refreshButton.querySelector('span') : null;
+            const countEl = document.getElementById('uniqueCount');
+
+            if (refreshButton && refreshButton.disabled) {
+                return;
+            }
+
+            setRefreshButtonState(refreshButton, true);
+            document.getElementById('loadingCard').classList.toggle('d-none', !isInitialLoad);
+            document.getElementById('modulesCard').classList.toggle('d-none', isInitialLoad);
+            allModules = [];
+            displayModules(allModules);
+            if (countEl) {
+                countEl.textContent = '0';
+            }
+            setProgressVisible(true);
+            resetProgress();
+
+            fetch('{{ url_for("modules.refresh_start") }}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': '{{ csrf_token }}',
+                }
+            })
                 .then(response => {
                     if (!response.ok) {
                         throw new Error('Failed to start refresh');
                     }
-                    
-                    // Create EventSource for streaming (GET endpoint)
+
                     const eventSource = new EventSource('{{ url_for("modules.refresh_modules", csrf_token=csrf_token) }}');
-                    
-                    let moduleCount = 0;
                     const collectedModules = [];
-                    
+
                     eventSource.onmessage = function(event) {
                         try {
                             const data = JSON.parse(event.data);
-                            
+
                             if (data.type === 'progress') {
-                                // Update progress bar
-                                if (data.total && data.current !== undefined) {
-                                    const percentage = Math.round((data.current / data.total) * 100);
-                                    const progressBar = document.getElementById('progressBar');
-                                    if (progressBar) {
-                                        progressBar.style.width = percentage + '%';
-                                        progressBar.setAttribute('aria-valuenow', percentage);
-                                    }
-                                    const progressCount = document.getElementById('progressCount');
-                                    if (progressCount) {
-                                        progressCount.textContent = `${data.current}/${data.total}`;
-                                    }
-                                }
-                                
-                                const progressText = document.getElementById('progressText');
-                                if (progressText && data.message) {
-                                    progressText.textContent = data.message;
-                                }
-                                
-                                // Update button text with progress
-                                if (buttonText) {
-                                    buttonText.textContent = `${data.current || 0}/${data.total || 0}`;
-                                }
-                                console.log(data.message);
+                                updateProgress(data, buttonText);
                             } else if (data.type === 'module') {
-                                // Add module to collection
+                                if (isInitialLoad && allModules.length === 0) {
+                                    document.getElementById('loadingCard').classList.add('d-none');
+                                    document.getElementById('modulesCard').classList.remove('d-none');
+                                }
                                 collectedModules.push(data.module);
                                 allModules.push(data.module);
-                                moduleCount++;
-                                
-                                // Sort all modules alphabetically by name
-                                allModules.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
-                                
-                                // Rebuild table with sorted modules
-                                if (tbody) {
-                                    tbody.innerHTML = '';
-                                    
-                                    allModules.forEach(module => {
-                                        const row = document.createElement('tr');
-                                        row.className = 'module-row';
-                                        row.setAttribute('data-category', module.category || 'Misc');
-                                        
-                                        const nameCell = document.createElement('td');
-                                        nameCell.innerHTML = '<code>' + escapeHtml(module.name) + '</code>';
-                                        
-                                        const descCell = document.createElement('td');
-                                        descCell.classList.add('d-none');
-                                        if (module.description) {
-                                            descCell.innerHTML = '<small class="text-muted">' + escapeHtml(module.description) + '</small>';
-                                        } else {
-                                            descCell.innerHTML = '<span class="text-muted">-</span>';
-                                        }
-                                        
-                                        const versionsCell = document.createElement('td');
-                                        if (module.versions && module.versions.length > 0) {
-                                            versionsCell.innerHTML = module.versions.map(v => 
-                                                '<button type="button" class="btn btn-sm copy-version me-1 mb-1" data-version="' + escapeHtml(v) + '" data-bs-toggle="tooltip" data-bs-placement="top" title="Click to copy: module load ' + escapeHtml(v) + '" style="background-color: var(--theme-bg-color); border-color: var(--theme-bg-color); color: var(--theme-text-color);"><i class="fa-regular fa-copy me-1"></i><code class="text-reset">' + escapeHtml(v) + '</code></button>'
-                                            ).join('');
-                                        } else {
-                                            versionsCell.innerHTML = '<span class="text-muted">-</span>';
-                                        }
-                                        
-                                        row.appendChild(nameCell);
-                                        row.appendChild(descCell);
-                                        row.appendChild(versionsCell);
-                                        tbody.appendChild(row);
-                                    });
-                                    
-                                    // Wire up copy handlers for all buttons
-                                    attachCopyHandlers();
-                                }
-                                
-                                // Update count
+                                displayModules(allModules);
                                 if (countEl) {
-                                    countEl.textContent = moduleCount;
-                                }
-                                
-                                // Apply current filters
-                                applyFilters();
-                            } else if (data.type === 'descriptions_start') {
-                                // Show descriptions loading alert
-                                const descriptionsAlert = document.getElementById('descriptionsLoadingAlert');
-                                if (descriptionsAlert) {
-                                    descriptionsAlert.classList.remove('d-none');
-                                }
-                            } else if (data.type === 'module_update') {
-                                // Update description for a specific module
-                                const moduleName = data.module_name;
-                                const description = data.description || '';
-                                
-                                // Find the row for this module and update description
-                                if (tbody) {
-                                    const rows = tbody.querySelectorAll('tr.module-row');
-                                    rows.forEach(row => {
-                                        const nameCell = row.querySelector('td:first-child code');
-                                        if (nameCell && nameCell.textContent.trim() === moduleName) {
-                                            const descCell = row.querySelector('td:nth-child(2)');
-                                            if (descCell) {
-                                                if (description) {
-                                                    descCell.innerHTML = '<small class="text-muted">' + escapeHtml(description) + '</small>';
-                                                } else {
-                                                    descCell.innerHTML = '<span class="text-muted">-</span>';
-                                                }
-                                            }
-                                        }
-                                    });
-                                }
-                                
-                                // Also update in allModules array
-                                const moduleIndex = allModules.findIndex(m => m.name === moduleName);
-                                if (moduleIndex !== -1) {
-                                    allModules[moduleIndex].description = description;
-                                }
-                            } else if (data.type === 'descriptions_complete') {
-                                // Hide descriptions loading alert
-                                const descriptionsAlert = document.getElementById('descriptionsLoadingAlert');
-                                if (descriptionsAlert) {
-                                    descriptionsAlert.classList.add('d-none');
+                                    countEl.textContent = allModules.length;
                                 }
                             } else if (data.type === 'complete') {
-                                // Refresh complete
                                 eventSource.close();
-                                
-                                // Hide progress bar after a brief delay
-                                setTimeout(() => {
-                                    const progressBarContainer = document.getElementById('progressBarContainer');
-                                    if (progressBarContainer) {
-                                        progressBarContainer.classList.add('d-none');
-                                    }
-                                }, 500);
-                                
-                                // Set progress bar to 100%
-                                const progressBar = document.getElementById('progressBar');
-                                if (progressBar) {
-                                    progressBar.style.width = '100%';
-                                    progressBar.setAttribute('aria-valuenow', 100);
-                                }
-                                
-                                // Update category filter with all collected modules
+                                setProgressVisible(false);
                                 const categories = new Set();
                                 collectedModules.forEach(m => categories.add(m.category));
                                 populateCategoryFilter(Array.from(categories).sort());
-                                
-                                // Update cache timestamp
-                                const cacheTimestampEl = document.getElementById('cacheTimestamp');
-                                const cacheTimestampValueEl = document.getElementById('cacheTimestampValue');
-                                if (cacheTimestampValueEl) {
-                                    const now = new Date();
-                                    const formatted = now.toLocaleString('en-US', {
-                                        year: 'numeric',
-                                        month: '2-digit',
-                                        day: '2-digit',
-                                        hour: '2-digit',
-                                        minute: '2-digit',
-                                        second: '2-digit'
-                                    });
-                                    cacheTimestampValueEl.textContent = formatted;
-                                }
-                                if (cacheTimestampEl) {
-                                    cacheTimestampEl.style.display = '';
-                                }
-                                
-                                // Restore button state
-                                icon.className = originalClass;
-                                if (buttonText) {
-                                    buttonText.textContent = 'Refresh';
-                                }
-                                this.disabled = false;
-                                
-                                console.log(data.message);
+                                updateCacheTimestamp();
+                                setRefreshButtonState(refreshButton, false);
                             } else if (data.type === 'error') {
-                                // Error occurred
                                 eventSource.close();
-                                alert('Error: ' + data.message);
-                                icon.className = originalClass;
-                                if (buttonText.textContent !== undefined) {
-                                    buttonText.textContent = 'Refresh';
-                                }
-                                this.disabled = false;
+                                setRefreshButtonState(refreshButton, false);
+                                showRefreshError('Error: ' + data.message, isInitialLoad);
                             }
                         } catch (error) {
                             console.error('Error parsing SSE data:', error);
                         }
                     };
-                    
+
                     eventSource.onerror = function(error) {
                         console.error('EventSource error:', error);
                         eventSource.close();
-                        alert('Connection error while refreshing modules.');
-                        icon.className = originalClass;
-                        if (buttonText.textContent !== undefined) {
-                            buttonText.textContent = 'Refresh';
-                        }
-                        this.disabled = false;
+                        setRefreshButtonState(refreshButton, false);
+                        showRefreshError(
+                            'Connection error while refreshing modules.',
+                            isInitialLoad
+                        );
                     };
                 })
                 .catch(error => {
-                    console.error('Error starting refresh:', error);
-                    alert('Failed to start refresh. Please try again.');
-                    icon.className = originalClass;
-                    if (buttonText.textContent !== undefined) {
-                        buttonText.textContent = 'Refresh';
-                    }
-                    this.disabled = false;
+                    console.error('Error starting module refresh:', error);
+                    setRefreshButtonState(refreshButton, false);
+                    showRefreshError(
+                        'Failed to start refresh. Please try again.',
+                        isInitialLoad
+                    );
                 });
-                
-                // Remove the old eventSource code that was here
+        }
+
+        {% if cache_empty %}
+        startModuleRefresh({ initialLoad: true });
+        {% endif %}
+
+        const refreshBtn = document.getElementById('refreshModulesBtn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', function() {
+                startModuleRefresh({ button: this });
             });
         }
         
-        // Watch for description preloading completion (startup background task)
-        let lastFileMtime = null;
-        let descriptionsWatchInterval = null;
-        let descriptionsUpdateInterval = null;
-        
-        function updateDescriptionsOnPage() {
-            // Fetch updated descriptions and update the page
-            fetch('{{ url_for("modules.descriptions_update") }}')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.descriptions && Object.keys(data.descriptions).length > 0) {
-                        let updatedCount = 0;
-                        const tbody = document.getElementById('modulesTableBody');
-                        
-                        // Update descriptions in allModules array
-                        Object.keys(data.descriptions).forEach(baseName => {
-                            const description = data.descriptions[baseName];
-                            const moduleIndex = allModules.findIndex(m => m.name === baseName);
-                            if (moduleIndex !== -1 && (!allModules[moduleIndex].description || allModules[moduleIndex].description.trim() === '')) {
-                                allModules[moduleIndex].description = description;
-                                updatedCount++;
-                            }
-                        });
-                        
-                        // Update the table if we have updates
-                        if (updatedCount > 0 && tbody) {
-                            const rows = tbody.querySelectorAll('tr.module-row');
-                            rows.forEach(row => {
-                                const nameCell = row.querySelector('td:first-child code');
-                                if (nameCell) {
-                                    const moduleName = nameCell.textContent.trim();
-                                    if (data.descriptions[moduleName]) {
-                                        const descCell = row.querySelector('td:nth-child(2)');
-                                        if (descCell) {
-                                            const description = data.descriptions[moduleName];
-                                            if (description && description.trim()) {
-                                                descCell.innerHTML = '<small class="text-muted">' + escapeHtml(description) + '</small>';
-                                            }
-                                        }
-                                    }
-                                }
-                            });
-                            
-                            // Show loading alert if descriptions are still being loaded
-                            const modulesNeedingDescriptions = allModules.filter(m => !m.description || m.description.trim() === '');
-                            const descriptionsAlert = document.getElementById('descriptionsLoadingAlert');
-                            if (descriptionsAlert) {
-                                if (modulesNeedingDescriptions.length > 0) {
-                                    descriptionsAlert.classList.remove('d-none');
-                                    document.getElementById('descriptionsLoadingText').textContent = 
-                                        `Loading descriptions... (${modulesNeedingDescriptions.length} remaining)`;
-                                } else {
-                                    descriptionsAlert.classList.add('d-none');
-                                    // Show completion alert
-                                    const completeAlert = document.getElementById('descriptionsCompleteAlert');
-                                    if (completeAlert) {
-                                        completeAlert.classList.remove('d-none');
-                                    }
-                                    // Stop updating
-                                    if (descriptionsUpdateInterval) {
-                                        clearInterval(descriptionsUpdateInterval);
-                                        descriptionsUpdateInterval = null;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                })
-                .catch(error => {
-                    console.debug('Error updating descriptions:', error);
-                });
-        }
-        
-        function checkDescriptionsStatus() {
-            fetch('{{ url_for("modules.descriptions_status") }}')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.file_exists && data.file_mtime) {
-                        // First time seeing the file - record the mtime
-                        if (lastFileMtime === null) {
-                            lastFileMtime = data.file_mtime;
-                            // Check if we have modules without descriptions
-                            const modulesNeedingDescriptions = allModules.filter(m => !m.description || m.description.trim() === '');
-                            if (modulesNeedingDescriptions.length > 0) {
-                                const descriptionsAlert = document.getElementById('descriptionsLoadingAlert');
-                                if (descriptionsAlert) {
-                                    descriptionsAlert.classList.remove('d-none');
-                                    document.getElementById('descriptionsLoadingText').textContent = 'Loading descriptions in background...';
-                                }
-                                // Start updating descriptions on page
-                                updateDescriptionsOnPage();
-                                descriptionsUpdateInterval = setInterval(updateDescriptionsOnPage, 3000);
-                            }
-                        } else if (data.file_mtime > lastFileMtime) {
-                            // File was updated - update last mtime
-                            lastFileMtime = data.file_mtime;
-                            // Update descriptions on page immediately
-                            updateDescriptionsOnPage();
-                        }
-                    }
-                })
-                .catch(error => {
-                    console.debug('Error checking descriptions status:', error);
-                });
-        }
-        
-        // Description file watching is disabled for the demo.
-        if (allModules.length > 0) {
-            // No-op: keep structure in place for future re-enabling.
-        }
     });
 })();
 </script>
