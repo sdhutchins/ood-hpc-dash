@@ -38,7 +38,23 @@ cd ood-hpc-dash
 
 ### Explanation of `setup.sh`
 
-Run `setup.sh` to create a virtual environment and install dependencies. The script also creates `bin/python`, which Passenger uses instead of system Python. This ensures Passenger uses your venv's Python with Flask installed.
+Run `setup.sh` to create a virtual environment and install dependencies.
+
+The script also creates `bin/python`, which Passenger uses instead of system Python. This ensures Passenger uses your venv's Python with Flask installed.
+
+## Local Docker Usage
+
+Build the image:
+
+```bash
+docker build -t ood-hpc-dash .
+```
+
+Run the app locally on `http://localhost:5002`:
+
+```bash
+docker run --rm -p 5002:5002 ood-hpc-dash
+```
 
 ## Learn More
 
