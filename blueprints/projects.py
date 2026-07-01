@@ -818,6 +818,37 @@ def _load_projects_cache() -> dict[str, Any] | None:
         return None
 
 
+def _cached_projects_for_dirs(
+    cached_data: dict[str, Any] | None,
+    normalized_dirs: list[str],
+) -> list[dict[str, Any]] | None:
+    """Return cached projects only when the cache matches current scan roots."""
+    if not cached_data:
+        return None
+
+    cached_dirs = sorted(
+        expand_path(directory)
+        for directory in cached_data.get('directories', [])
+        if isinstance(directory, str)
+    )
+    if cached_dirs != normalized_dirs:
+        logger.info("Projects cache directories changed; refreshing project data")
+        return None
+
+    cached_projects = cached_data.get('projects', [])
+    if not isinstance(cached_projects, list):
+        return None
+
+    valid_projects = [
+        project for project in cached_projects
+        if isinstance(project, dict) and 'path' in project
+    ]
+    if not valid_projects:
+        return None
+
+    return valid_projects
+
+
 def _save_projects_cache(projects_data: list[dict[str, Any]], directories: list[str]) -> None:
     """Save projects cache to file.
     
@@ -843,6 +874,7 @@ def _save_projects_cache(projects_data: list[dict[str, Any]], directories: list[
 def _collect_projects_data(
     project_dirs: list[str],
     use_cache: bool = True,
+    force_refresh: bool = False,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """
     Collect project data from cache or by scanning directories.
@@ -852,6 +884,7 @@ def _collect_projects_data(
     Args:
         project_dirs: List of project directories to scan
         use_cache: Whether to use cache (default True)
+        force_refresh: Whether to bypass cache reads and update it from scan
     
     Returns:
         Tuple of (projects_data_list, error_message)
@@ -859,11 +892,19 @@ def _collect_projects_data(
     # Normalize directory paths for comparison
     normalized_dirs = sorted([expand_path(d) for d in project_dirs])
     
-    # Load cache only as an error fallback. Returning it before a scan would
-    # hide new repos, deleted repos, branch changes, and dirty/clean state.
     cached_data = None
     if use_cache:
         cached_data = _load_projects_cache()
+        cached_projects = _cached_projects_for_dirs(
+            cached_data,
+            normalized_dirs,
+        )
+        if cached_projects is not None and not force_refresh:
+            logger.info(
+                "Using cached projects data for %d repositories",
+                len(cached_projects),
+            )
+            return cached_projects, None
     
     logger.info(f"Scanning {len(normalized_dirs)} project directories")
     try:
@@ -877,12 +918,11 @@ def _collect_projects_data(
     except PROJECT_REPO_ERRORS as e:
         logger.error(f"Error in _collect_projects_data: {e}", exc_info=True)
         if cached_data:
-            cached_projects = cached_data.get('projects', [])
-            valid_projects = [
-                p for p in cached_projects
-                if isinstance(p, dict) and 'path' in p
-            ]
-            if valid_projects:
+            valid_projects = _cached_projects_for_dirs(
+                cached_data,
+                normalized_dirs,
+            )
+            if valid_projects is not None:
                 logger.warning(
                     f"Returning {len(valid_projects)} cached projects after "
                     f"scan failure: {e}"
@@ -1109,6 +1149,7 @@ def projects_status():
             projects_data, error = _collect_projects_data(
                 validated_project_dirs,
                 use_cache=True,
+                force_refresh=force_refresh,
             )
         except PROJECT_REPO_ERRORS as collect_err:
             logger.error(

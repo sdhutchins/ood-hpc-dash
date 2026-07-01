@@ -165,4 +165,8 @@ def test_projects_status_returns_json(
     assert response.status_code == 200
     assert payload["projects"] == []
     assert payload["total"] == 0
-    mock_collect.assert_called_once_with([str(project_root)], use_cache=True)
+    mock_collect.assert_called_once_with(
+        [str(project_root)],
+        use_cache=True,
+        force_refresh=True,
+    )

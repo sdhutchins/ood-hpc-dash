@@ -112,7 +112,7 @@
     const perPage = 20;
     let fetchController = null;
     
-    function loadProjectsData() {
+    function loadProjectsData(forceRefresh = false) {
         const loading = el('loadingIndicator');
         const error = el('errorMessage');
         const errorText = el('errorText');
@@ -127,7 +127,8 @@
         hide(error);
         hide(noProjects);
         
-        const url = el('projectsPageData')?.dataset.statusUrl || '/projects/status';
+        const baseUrl = el('projectsPageData')?.dataset.statusUrl || '/projects/status';
+        const url = forceRefresh ? `${baseUrl}?refresh=true` : baseUrl;
         fetchController = new AbortController();
         const timeoutId = setTimeout(() => {
             fetchController.abort();
@@ -492,7 +493,7 @@
             const icon = this.querySelector('i');
             icon.classList.add('fa-spin');
             this.disabled = true;
-            loadProjectsData();
+            loadProjectsData(true);
             setTimeout(() => {
                 icon.classList.remove('fa-spin');
                 this.disabled = false;
