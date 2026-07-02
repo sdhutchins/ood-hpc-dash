@@ -39,14 +39,22 @@
                 <td>{{ env.name }}</td>
                 <td class="text-break"><code>{{ env.path }}</code></td>
                 <td>
-                  <button
-                    type="button"
-                    class="btn btn-sm btn-primary view-env-history"
-                    data-env-name="{{ env.name }}"
-                    data-env-path="{{ env.path }}"
-                  >
-                    View
-                  </button>
+                  <div class="btn-group btn-group-sm" role="group">
+                    <a
+                      class="btn btn-outline-primary"
+                      href="{{ url_for('envs.requested_packages', path=env.path) }}"
+                    >
+                      Requested Packages
+                    </a>
+                    <button
+                      type="button"
+                      class="btn btn-primary view-env-history"
+                      data-env-name="{{ env.name }}"
+                      data-env-path="{{ env.path }}"
+                    >
+                      View
+                    </button>
+                  </div>
                 </td>
               </tr>
             {% endfor %}

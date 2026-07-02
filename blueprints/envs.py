@@ -1,10 +1,23 @@
+import shlex
 from pathlib import Path
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, Response, jsonify, render_template, request
 
 from utils import expand_path, load_settings
 
 envs_bp = Blueprint('envs', __name__, url_prefix='/envs')
+
+_CONDA_PACKAGE_ACTIONS = {'create', 'install', 'update'}
+_CONDA_OPTIONS_WITH_VALUES = {
+    '-c',
+    '--channel',
+    '-f',
+    '--file',
+    '-n',
+    '--name',
+    '-p',
+    '--prefix',
+}
 
 
 def _find_environments_file(conda_paths: list[str]) -> tuple[Path | None, str | None]:
@@ -114,6 +127,91 @@ def _parse_conda_history(history_text: str) -> list[str]:
     return sorted(dependencies_by_name.values())
 
 
+def _parse_requested_package_names(command_line: str) -> set[str]:
+    """Extract explicit package names from one conda history command."""
+    try:
+        tokens = shlex.split(command_line)
+    except ValueError:
+        return set()
+
+    requested_names: set[str] = set()
+    collecting_packages = False
+    skip_next_value = False
+
+    for token in tokens[1:]:
+        if skip_next_value:
+            skip_next_value = False
+            continue
+
+        if token in _CONDA_PACKAGE_ACTIONS:
+            collecting_packages = True
+            continue
+
+        if token == 'env':
+            continue
+
+        if token.startswith('-'):
+            if token in _CONDA_OPTIONS_WITH_VALUES:
+                skip_next_value = True
+            continue
+
+        if not collecting_packages:
+            continue
+
+        package_name = token.split('=', 1)[0].rsplit('::', 1)[-1]
+        if package_name:
+            requested_names.add(package_name)
+
+    return requested_names
+
+
+def _strip_build_from_dependency_spec(dependency_spec: str) -> str:
+    """Reduce a full conda spec to name and version for a minimal export."""
+    package_name, version, _build = dependency_spec.split('=', 2)
+    return f"{package_name}={version}"
+
+
+def _parse_requested_conda_history(history_text: str) -> list[str]:
+    """Build explicit package specs from conda history transactions."""
+    requested_dependencies_by_name: dict[str, str] = {}
+    active_requested_names: set[str] = set()
+
+    for raw_line in history_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if line.startswith('==>'):
+            active_requested_names = set()
+            continue
+
+        if line.startswith('# cmd:'):
+            command_line = line.removeprefix('# cmd:').strip()
+            active_requested_names = _parse_requested_package_names(
+                command_line
+            )
+            continue
+
+        if line[0] not in {'+', '-'}:
+            continue
+
+        parsed_record = _parse_conda_package_record(line[1:])
+        if parsed_record is None:
+            continue
+
+        package_name, dependency_spec = parsed_record
+        if line.startswith('-'):
+            requested_dependencies_by_name.pop(package_name, None)
+            continue
+
+        if package_name in active_requested_names:
+            requested_dependencies_by_name[package_name] = (
+                _strip_build_from_dependency_spec(dependency_spec)
+            )
+
+    return sorted(requested_dependencies_by_name.values())
+
+
 def _read_env_history(env_path: str) -> tuple[str | None, str | None]:
     """Read conda-meta/history and return parsed dependency output."""
     history_path = Path(env_path) / "conda-meta" / "history"
@@ -135,6 +233,29 @@ def _read_env_history(env_path: str) -> tuple[str | None, str | None]:
     return "\n".join(lines) + "\n", None
 
 
+def _read_requested_packages_env(
+    env_path: str,
+) -> tuple[str | None, str | None]:
+    """Read conda history and return explicit packages as environment YAML."""
+    history_path = Path(env_path) / "conda-meta" / "history"
+    if not history_path.exists():
+        return None, f"No conda history found at {history_path}."
+
+    try:
+        history_text = history_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return None, f"Unable to read conda history: {exc}"
+
+    dependencies = _parse_requested_conda_history(history_text)
+    if not dependencies:
+        return None, f"No requested package records found in {history_path}."
+
+    env_name = Path(env_path).name
+    lines = [f"name: {env_name}", "dependencies:"]
+    lines.extend(f"  - {dependency}" for dependency in dependencies)
+    return "\n".join(lines) + "\n", None
+
+
 def _resolve_env_directory(raw_path: str) -> Path | None:
     """Resolve env paths before comparing user input to configured envs."""
     try:
@@ -145,6 +266,25 @@ def _resolve_env_directory(raw_path: str) -> Path | None:
     if not resolved_path.is_dir():
         return None
     return resolved_path
+
+
+def _resolve_configured_env_path(raw_path: str) -> Path | None:
+    """Resolve a user-supplied path if it matches a configured environment."""
+    requested_env_path = _resolve_env_directory(raw_path)
+    if requested_env_path is None:
+        return None
+
+    envs_list, _ = _load_envs_from_conda_list()
+    known_env_paths = {
+        resolved_env_path
+        for env in envs_list
+        if (resolved_env_path := _resolve_env_directory(env["path"]))
+        is not None
+    }
+    if requested_env_path not in known_env_paths:
+        return None
+
+    return requested_env_path
 
 # Category display metadata
 CATEGORY_META = {
@@ -180,19 +320,8 @@ def env_history() -> tuple[object, int] | object:
     if not isinstance(env_path, str) or not env_path.strip():
         return jsonify({"error": "Environment path is required."}), 400
 
-    env_path = env_path.strip()
-    requested_env_path = _resolve_env_directory(env_path)
+    requested_env_path = _resolve_configured_env_path(env_path.strip())
     if requested_env_path is None:
-        return jsonify({"error": "Environment path is not configured."}), 403
-
-    envs_list, _ = _load_envs_from_conda_list()
-    known_env_paths = {
-        resolved_env_path
-        for env in envs_list
-        if (resolved_env_path := _resolve_env_directory(env["path"]))
-        is not None
-    }
-    if requested_env_path not in known_env_paths:
         return jsonify({"error": "Environment path is not configured."}), 403
 
     output, error = _read_env_history(str(requested_env_path))
@@ -200,3 +329,30 @@ def env_history() -> tuple[object, int] | object:
         return jsonify({"error": error}), 500
 
     return jsonify({"path": str(requested_env_path), "output": output})
+
+
+@envs_bp.route('/requested-packages')
+def requested_packages() -> Response | tuple[object, int]:
+    """Return explicit packages for a configured environment as YAML."""
+    env_path = request.args.get("path", "").strip()
+    if not env_path:
+        return jsonify({"error": "Environment path is required."}), 400
+
+    requested_env_path = _resolve_configured_env_path(env_path)
+    if requested_env_path is None:
+        return jsonify({"error": "Environment path is not configured."}), 403
+
+    output, error = _read_requested_packages_env(str(requested_env_path))
+    if error is not None:
+        return jsonify({"error": error}), 500
+
+    filename = f"{requested_env_path.name}-requested-packages.yml"
+    return Response(
+        output,
+        mimetype='text/yaml',
+        headers={
+            'Content-Disposition': (
+                f'attachment; filename="{filename}"'
+            ),
+        },
+    )

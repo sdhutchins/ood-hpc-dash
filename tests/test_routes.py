@@ -127,6 +127,53 @@ def test_env_history_accepts_resolved_configured_path(
     assert "python=3.10.12=h1234567_0" in payload["output"]
 
 
+def test_requested_packages_download_accepts_resolved_configured_path(
+    client,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    env_dir = tmp_path / "envs" / "analysis"
+    history_dir = env_dir / "conda-meta"
+    history_dir.mkdir(parents=True)
+    (history_dir / "history").write_text(
+        "\n".join(
+            [
+                "==> 2024-01-01 <==",
+                "# cmd: /opt/conda/bin/conda create -p /tmp/env python numpy",
+                "+defaults::python-3.10.12-h1234567_0",
+                "+defaults::numpy-1.24.0-py310h1234567_0",
+                "+defaults::openssl-1.1.1w-h1234567_0",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    environments_file = tmp_path / "environments.txt"
+    environments_file.write_text(f"{env_dir}\n", encoding="utf-8")
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(
+        json.dumps({"conda_envs_paths": [str(environments_file)]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "SETTINGS_FILE", settings_file)
+
+    response = client.get(
+        "/envs/requested-packages",
+        query_string={"path": f"{env_dir}/"},
+    )
+
+    assert response.status_code == 200
+    assert 'attachment; filename="analysis-requested-packages.yml"' in (
+        response.headers["Content-Disposition"]
+    )
+    body = response.get_data(as_text=True)
+    assert "name: analysis" in body
+    assert "  - python=3.10.12" in body
+    assert "  - numpy=1.24.0" in body
+    assert "openssl" not in body
+
+
 @patch("blueprints.jobs._get_partition_info", return_value=([], None))
 @patch("blueprints.jobs._call_squeue", return_value=(None, None))
 @patch("blueprints.jobs._call_sacct", return_value=(None, None))
