@@ -165,6 +165,35 @@ def _parse_requested_package_names(command_line: str) -> set[str]:
     return requested_names
 
 
+def _extract_conda_env_file_reference(command_line: str) -> str | None:
+    """Return the env file path used for a file-based conda env creation."""
+    try:
+        tokens = shlex.split(command_line)
+    except ValueError:
+        return None
+
+    for index, token in enumerate(tokens):
+        if token in {'-f', '--file'} and index + 1 < len(tokens):
+            return tokens[index + 1]
+
+    return None
+
+
+def _find_env_file_reference(history_text: str) -> str | None:
+    """Find the most recent env file reference recorded in conda history."""
+    for raw_line in reversed(history_text.splitlines()):
+        line = raw_line.strip()
+        if not line.startswith('# cmd:'):
+            continue
+
+        command_line = line.removeprefix('# cmd:').strip()
+        env_file_reference = _extract_conda_env_file_reference(command_line)
+        if env_file_reference is not None:
+            return env_file_reference
+
+    return None
+
+
 def _strip_build_from_dependency_spec(dependency_spec: str) -> str:
     """Reduce a full conda spec to name and version for a minimal export."""
     package_name, version, _build = dependency_spec.split('=', 2)
@@ -229,6 +258,9 @@ def _read_env_history(env_path: str) -> tuple[str | None, str | None]:
 
     env_name = Path(env_path).name
     lines = [f"name: {env_name}", "dependencies:"]
+    env_file_reference = _find_env_file_reference(history_text)
+    if env_file_reference is not None:
+        lines.insert(1, f"# source_env_file: {env_file_reference}")
     lines.extend(f"  - {dependency}" for dependency in dependencies)
     return "\n".join(lines) + "\n", None
 

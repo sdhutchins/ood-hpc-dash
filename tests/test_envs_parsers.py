@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from blueprints.envs import (
     _categorize_env,
+    _find_env_file_reference,
     _group_envs,
     _parse_conda_history,
     _parse_conda_package_record,
@@ -68,6 +69,20 @@ def test_parse_requested_conda_history_tracks_current_packages() -> None:
     assert "numpy=1.26.4" in dependencies
     assert not any(dep.startswith("openssl=") for dep in dependencies)
     assert not any(dep.startswith("pandas=") for dep in dependencies)
+
+
+def test_find_env_file_reference_reads_file_based_create() -> None:
+    history_text = "\n".join(
+        [
+            "==> 2025-03-20 16:56:00 <==",
+            "# cmd: /opt/conda/bin/conda-env create -f configs/bcftools.yaml",
+            "# conda version: 23.7.4",
+            "+bioconda/linux-64::bcftools-1.21-h3a4d415_1",
+            "# update specs: ['bcftools']",
+        ]
+    )
+
+    assert _find_env_file_reference(history_text) == "configs/bcftools.yaml"
 
 
 def test_categorize_env_prefers_scratch_over_tool_labels() -> None:

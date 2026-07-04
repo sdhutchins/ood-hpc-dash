@@ -99,7 +99,14 @@ def test_env_history_accepts_resolved_configured_path(
     history_dir = env_dir / "conda-meta"
     history_dir.mkdir(parents=True)
     (history_dir / "history").write_text(
-        "+defaults::python-3.10.12-h1234567_0\n",
+        "\n".join(
+            [
+                "==> 2024-01-01 <==",
+                "# cmd: /opt/conda/bin/conda-env create -f configs/analysis.yaml",
+                "+defaults::python-3.10.12-h1234567_0",
+            ]
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -124,6 +131,7 @@ def test_env_history_accepts_resolved_configured_path(
 
     assert response.status_code == 200
     assert payload["path"] == str(env_dir.resolve())
+    assert "# source_env_file: configs/analysis.yaml" in payload["output"]
     assert "python=3.10.12=h1234567_0" in payload["output"]
 
 

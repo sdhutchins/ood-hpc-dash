@@ -39,22 +39,14 @@
                 <td>{{ env.name }}</td>
                 <td class="text-break"><code>{{ env.path }}</code></td>
                 <td>
-                  <div class="btn-group btn-group-sm" role="group">
-                    <a
-                      class="btn btn-outline-primary"
-                      href="{{ url_for('envs.requested_packages', path=env.path) }}"
-                    >
-                      Requested Packages
-                    </a>
-                    <button
-                      type="button"
-                      class="btn btn-primary view-env-history"
-                      data-env-name="{{ env.name }}"
-                      data-env-path="{{ env.path }}"
-                    >
-                      View
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    class="btn btn-primary btn-sm view-env-history"
+                    data-env-name="{{ env.name }}"
+                    data-env-path="{{ env.path }}"
+                  >
+                    View
+                  </button>
                 </td>
               </tr>
             {% endfor %}
@@ -91,9 +83,13 @@
       </div>
       <div class="modal-body">
         <p class="small text-muted mb-2" id="envHistoryPath"></p>
-        <pre class="bg-light border rounded p-3 mb-0"><code
+        <textarea
           id="envHistoryOutput"
-        >Loading...</code></pre>
+          class="form-control font-monospace"
+          rows="18"
+          readonly
+          spellcheck="false"
+        >Loading...</textarea>
       </div>
     </div>
   </div>
@@ -119,7 +115,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     modalTitle.textContent = envName + ' Dependencies / Env File';
     modalPath.textContent = envPath;
-    modalOutput.textContent = 'Loading...';
+    modalOutput.value = 'Loading...';
     envHistoryModal.show();
 
     try {
@@ -135,9 +131,9 @@ document.addEventListener('DOMContentLoaded', function() {
       if (!response.ok) {
         throw new Error(data.error || 'Unable to read environment history.');
       }
-      modalOutput.textContent = data.output || '(empty history)';
+      modalOutput.value = data.output || '(empty history)';
     } catch (error) {
-      modalOutput.textContent = error.message;
+      modalOutput.value = error.message;
     }
   });
 });
