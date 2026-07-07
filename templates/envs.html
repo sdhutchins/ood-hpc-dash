@@ -76,6 +76,15 @@
         </h5>
         <button
           type="button"
+          class="btn btn-outline-secondary btn-sm me-3"
+          id="copyEnvHistoryButton"
+          aria-label="Copy environment output"
+        >
+          <i class="fa-regular fa-copy me-1" aria-hidden="true"></i>
+          <span id="copyEnvHistoryButtonText">Copy</span>
+        </button>
+        <button
+          type="button"
           class="btn-close"
           data-bs-dismiss="modal"
           aria-label="Close"
@@ -100,9 +109,53 @@ document.addEventListener('DOMContentLoaded', function() {
   const modalTitle = document.getElementById('envHistoryModalLabel');
   const modalPath = document.getElementById('envHistoryPath');
   const modalOutput = document.getElementById('envHistoryOutput');
+  const copyButton = document.getElementById('copyEnvHistoryButton');
+  const copyButtonText = document.getElementById('copyEnvHistoryButtonText');
   const envHistoryModal = new bootstrap.Modal(
     document.getElementById('envHistoryModal')
   );
+  let copyFeedbackTimeoutId = null;
+
+  function setCopyButtonLabel(label) {
+    copyButtonText.textContent = label;
+  }
+
+  function showCopyFeedback(label) {
+    setCopyButtonLabel(label);
+    if (copyFeedbackTimeoutId !== null) {
+      window.clearTimeout(copyFeedbackTimeoutId);
+    }
+    copyFeedbackTimeoutId = window.setTimeout(function() {
+      setCopyButtonLabel('Copy');
+      copyFeedbackTimeoutId = null;
+    }, 1500);
+  }
+
+  async function copyModalOutput() {
+    const outputText = modalOutput.value;
+    if (!outputText) {
+      showCopyFeedback('Empty');
+      return;
+    }
+
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(outputText);
+      } else {
+        modalOutput.focus();
+        modalOutput.select();
+        modalOutput.setSelectionRange(0, outputText.length);
+        document.execCommand('copy');
+      }
+      showCopyFeedback('Copied');
+    } catch (error) {
+      showCopyFeedback('Failed');
+    }
+  }
+
+  copyButton.addEventListener('click', function() {
+    void copyModalOutput();
+  });
 
   document.addEventListener('click', async function(event) {
     const button = event.target.closest('.view-env-history');
@@ -116,6 +169,7 @@ document.addEventListener('DOMContentLoaded', function() {
     modalTitle.textContent = envName + ' Dependencies / Env File';
     modalPath.textContent = envPath;
     modalOutput.value = 'Loading...';
+    setCopyButtonLabel('Copy');
     envHistoryModal.show();
 
     try {

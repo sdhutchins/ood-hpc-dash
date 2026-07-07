@@ -402,6 +402,53 @@ def _sse_response(events: Iterator[str]) -> Response:
     )
 
 
+def _stream_refreshed_modules() -> Iterator[str]:
+    """Run one module refresh and stream the resulting SSE payloads."""
+    global _modules_cache, _modules_cache_timestamp, _streaming_in_progress
+
+    error_message = None
+    with _streaming_lock:
+        if _streaming_in_progress:
+            error_message = 'Refresh already in progress'
+        else:
+            _streaming_in_progress = True
+
+    if error_message:
+        yield _sse_event({'type': 'error', 'message': error_message})
+        return
+
+    try:
+        with _module_refresh_file_lock() as lock_acquired:
+            if not lock_acquired:
+                yield _sse_event({
+                    'type': 'error',
+                    'message': (
+                        'Module refresh is already running in another worker'
+                    ),
+                })
+                return
+
+            all_modules: list[dict[str, object]] = []
+            for event in _get_all_modules_streaming():
+                if event['type'] == 'module':
+                    module = event.get('module')
+                    if isinstance(module, dict):
+                        all_modules.append(module)
+                    yield _sse_event(event)
+                elif event['type'] == 'complete':
+                    _modules_cache = sorted(
+                        all_modules,
+                        key=lambda module: str(module['name']).lower(),
+                    )
+                    _modules_cache_timestamp = time.time()
+                    yield _sse_event(event)
+                elif event['type'] in {'progress', 'error'}:
+                    yield _sse_event(event)
+    finally:
+        with _streaming_lock:
+            _streaming_in_progress = False
+
+
 def _module_records_from_spider_data(
     modules_dict: dict[str, dict[str, object]],
 ) -> list[dict[str, object]]:
@@ -693,53 +740,7 @@ def refresh_start():
 @modules_bp.route('/refresh-stream')
 def refresh_modules():
     """Stream fresh module data via SSE (GET endpoint for EventSource)."""
-    global _streaming_in_progress
-
-    def generate() -> Iterator[str]:
-        global _streaming_in_progress
-        error_message = None
-        with _streaming_lock:
-            if _streaming_in_progress:
-                error_message = 'Refresh already in progress'
-            else:
-                _streaming_in_progress = True
-
-        if error_message:
-            yield _sse_event({'type': 'error', 'message': error_message})
-            return
-
-        try:
-            with _module_refresh_file_lock() as lock_acquired:
-                if not lock_acquired:
-                    yield _sse_event({
-                        'type': 'error',
-                        'message': (
-                            'Module refresh is already running in another '
-                            'worker'
-                        ),
-                    })
-                    return
-
-                all_modules = []
-                for event in _get_all_modules_streaming():
-                    if event['type'] == 'module':
-                        all_modules.append(event['module'])
-                        yield _sse_event(event)
-                    elif event['type'] == 'complete':
-                        global _modules_cache, _modules_cache_timestamp
-                        _modules_cache = sorted(
-                            all_modules,
-                            key=lambda m: m['name'].lower(),
-                        )
-                        _modules_cache_timestamp = time.time()
-                        yield _sse_event(event)
-                    elif event['type'] in {'progress', 'error'}:
-                        yield _sse_event(event)
-        finally:
-            with _streaming_lock:
-                _streaming_in_progress = False
-
-    return _sse_response(generate())
+    return _sse_response(_stream_refreshed_modules())
 
 
 @modules_bp.route('/refresh-status')

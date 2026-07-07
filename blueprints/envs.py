@@ -3,7 +3,11 @@ from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, render_template, request
 
-from utils import expand_path, load_settings
+from utils import (
+    _resolved_existing_directory,
+    expand_path,
+    load_settings,
+)
 
 envs_bp = Blueprint('envs', __name__, url_prefix='/envs')
 
@@ -288,16 +292,7 @@ def _read_requested_packages_env(
     return "\n".join(lines) + "\n", None
 
 
-def _resolve_env_directory(raw_path: str) -> Path | None:
-    """Resolve env paths before comparing user input to configured envs."""
-    try:
-        resolved_path = Path(raw_path).expanduser().resolve(strict=True)
-    except (OSError, RuntimeError):
-        return None
-
-    if not resolved_path.is_dir():
-        return None
-    return resolved_path
+_resolve_env_directory = _resolved_existing_directory
 
 
 def _resolve_configured_env_path(raw_path: str) -> Path | None:
